@@ -57,6 +57,18 @@ button {
   min-width: 0;
 }
 
+.brand-button {
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.brand-button:hover .mark {
+  background: #eef3f8;
+}
+
 .mark {
   display: flex;
   align-items: center;
@@ -448,7 +460,7 @@ textarea {
 }
 
 .kpi-grid {
-  grid-template-columns: repeat(6, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .kpi {
@@ -504,6 +516,52 @@ textarea {
   margin-bottom: 14px;
 }
 
+.plain-note,
+.footnote {
+  margin: -6px 0 0;
+  color: #637083;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.plain-note.in-panel {
+  margin: 0 0 14px;
+}
+
+.advanced-panel {
+  border: 1px solid #d9e0ea;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.advanced-panel summary {
+  min-height: 44px;
+  padding: 12px 16px;
+  color: #243044;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.advanced-panel[open] {
+  padding-bottom: 14px;
+}
+
+.advanced-panel[open] summary {
+  border-bottom: 1px solid #e6ebf2;
+  margin-bottom: 14px;
+}
+
+.advanced-panel > .split,
+.advanced-panel > .table-wrap,
+.advanced-panel > .panel {
+  margin: 0 14px;
+}
+
+.compact-split {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+}
+
 .small-action {
   min-height: 34px;
   padding: 0 11px;
@@ -518,6 +576,33 @@ textarea {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.carryover-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.metric {
+  padding: 12px;
+  border: 1px solid #d9e0ea;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.metric span {
+  display: block;
+  color: #637083;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.metric strong {
+  display: block;
+  margin-top: 6px;
+  color: #172033;
+  font-size: 18px;
 }
 
 .attention-actions button {
@@ -632,7 +717,8 @@ th {
 }
 
 .pill.allowable,
-.pill.within-budget {
+.pill.within-budget,
+.pill.within {
   background: #dff7ef;
   color: #146355;
 }
@@ -694,6 +780,7 @@ th {
   .file-grid,
   .form-grid,
   .attention-actions,
+  .carryover-metrics,
   .compact-row {
     grid-template-columns: 1fr;
   }

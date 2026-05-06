@@ -161,6 +161,13 @@ export default function App() {
     setDraftStatus("Autosaved draft cleared.");
   }
 
+  function openHome() {
+    setProject(null);
+    setTab("Dashboard");
+    setFiles({});
+    setMessage("Home opened. Start a new grant review or resume an autosaved draft.");
+  }
+
   async function importCarryover(file?: File) {
     if (!file || !project) return;
     const prior = await loadProjectBundle(file);
@@ -196,7 +203,7 @@ export default function App() {
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
-        <div className="brand">
+        <button className="brand brand-button" type="button" title="Home / New Grant" onClick={openHome}>
           <div className="mark">
             <img src={axountLogo} alt="" />
           </div>
@@ -204,7 +211,7 @@ export default function App() {
             <h1>aXount: Grant Ledger</h1>
             <p>Local grant reconciliation</p>
           </div>
-        </div>
+        </button>
         <button
           className="sidebar-toggle"
           type="button"
@@ -235,6 +242,10 @@ export default function App() {
                 </button>
               ))}
             </nav>
+            <button className="secondary" onClick={openHome}>
+              <span className="save-full">New Grant</span>
+              <span className="save-short">New</span>
+            </button>
             <button className="secondary" onClick={saveProject}>
               <span className="save-full">Save Project</span>
               <span className="save-short">Save</span>
@@ -281,7 +292,7 @@ export default function App() {
             {tab === "Accounts" && <Accounts project={project} sourceVariances={sourceVariances} />}
             {tab === "Functions" && <Breakdown project={project} mode="function" />}
             {tab === "Objects" && <Breakdown project={project} mode="object" />}
-            {tab === "Carryover" && <Carryover project={project} onImport={importCarryover} />}
+            {tab === "Carryover" && <Carryover project={project} rollups={rollups} totals={totals!} onImport={importCarryover} />}
             {tab === "Export" && <ExportView project={project} onSave={saveProject} onExport={exportWorkbook} />}
           </>
         )}
@@ -443,6 +454,8 @@ function Dashboard({
 }) {
   const overBudget = rollups.filter((row) => row.state === "Over Budget");
   const flexUsed = rollups.filter((row) => row.state === "Flex Used");
+  const accountBudget = project.accounts.reduce((total, account) => total + account.ytdBudget, 0);
+  const budgetGapTotal = sourceVariances.reduce((total, variance) => total + Math.abs(variance.differenceAmount), 0);
   const reviewItems = project.allocations
     .filter((allocation) => allocation.status === "Review Required" || allocation.matchBasis !== "specific-budget-line")
     .sort((a, b) => priority(b) - priority(a));
@@ -452,15 +465,57 @@ function Dashboard({
       <ScreenHeader title="Dashboard" subtitle={`${project.grantName} / ${project.fiscalYear}`} />
       <div className="kpi-grid">
         <Kpi label="Approved Budget" value={currency(totals.approved)} />
+        <Kpi label="Loaded Account Budget" value={currency(accountBudget)} tone={budgetGapTotal ? "warn" : "good"} />
         <Kpi label="Invoice Payments" value={currency(totals.payments)} />
-        <Kpi label="Allowable" value={currency(totals.allowable)} />
+        <Kpi label="Confirmed Purchases" value={currency(totals.grantToDate)} />
+        <Kpi label="Budget Remaining" value={currency(totals.remainingBeforeFlex)} tone={totals.remainingBeforeFlex < 0 ? "bad" : "good"} />
         <Kpi label="Needs Review" value={currency(totals.review)} tone="warn" />
         <Kpi label="Not Allowable" value={currency(totals.notAllowable)} tone="bad" />
-        <Kpi label="Account Variance" value={currency(totals.variance)} tone={totals.variance ? "warn" : "good"} />
+        <Kpi label="Budget/Account Gaps" value={currency(budgetGapTotal)} tone={budgetGapTotal ? "warn" : "good"} />
       </div>
-      <div className="split">
-        <section className="panel">
-          <h3>Budget Flex Exposure</h3>
+      <p className="plain-note">
+        Confirmed Purchases includes reviewed current-year purchases plus imported prior-year confirmed purchases.
+        Items still marked Needs Review are not counted as confirmed.
+      </p>
+      <section className="panel">
+        <div className="panel-heading">
+          <h3>Attention Needed</h3>
+          <button className="small-action" onClick={() => onOpenTab("Review Queue")}>Open Review Queue</button>
+        </div>
+        <div className="attention-actions">
+          <button onClick={() => onOpenTab("Review Queue")}>
+            <strong>{reviewItems.length}</strong>
+            <span>purchase items need review</span>
+          </button>
+          <button onClick={() => onOpenTab("Budget Lines")}>
+            <strong>{overBudget.length}</strong>
+            <span>budget lines are over budget</span>
+          </button>
+          <button onClick={() => onOpenTab("Accounts")}>
+            <strong>{sourceVariances.length}</strong>
+            <span>budget/account setup gaps</span>
+          </button>
+          <button onClick={() => onOpenTab("Carryover")}>
+            <strong>{currency(totals.carryover)}</strong>
+            <span>imported prior-year purchases</span>
+          </button>
+        </div>
+      </section>
+      <details className="advanced-panel">
+        <summary>Advanced detail</summary>
+        <div className="split compact-split">
+          <section className="panel">
+            <h3>Detailed Budget Position</h3>
+            <div className="carryover-metrics">
+              <Metric label="Approved budget" value={currency(totals.approved)} />
+              <Metric label="Prior confirmed purchases" value={currency(totals.carryover)} />
+              <Metric label="Current confirmed purchases" value={currency(totals.allowable)} />
+              <Metric label="All confirmed purchases" value={currency(totals.grantToDate)} />
+              <Metric label="Budget remaining" value={currency(totals.remainingBeforeFlex)} />
+            </div>
+          </section>
+          <section className="panel">
+            <h3>Line Status Detail</h3>
           <table>
             <thead>
               <tr>
@@ -482,32 +537,9 @@ function Dashboard({
               })}
             </tbody>
           </table>
-        </section>
-        <section className="panel">
-          <div className="panel-heading">
-            <h3>Attention Needed</h3>
-            <button className="small-action" onClick={() => onOpenTab("Review Queue")}>Open Review Queue</button>
-          </div>
-          <div className="attention-actions">
-            <button onClick={() => onOpenTab("Review Queue")}>
-              <strong>{reviewItems.length}</strong>
-              <span>items require purchase review</span>
-            </button>
-            <button onClick={() => onOpenTab("Budget Lines")}>
-              <strong>{overBudget.length}</strong>
-              <span>budget lines over 10% ceiling</span>
-            </button>
-            <button onClick={() => onOpenTab("Budget Lines")}>
-              <strong>{flexUsed.length}</strong>
-              <span>budget lines using flex</span>
-            </button>
-            <button onClick={() => onOpenTab("Accounts")}>
-              <strong>{sourceVariances.length}</strong>
-              <span>budget/account setup gaps</span>
-            </button>
-          </div>
-        </section>
-      </div>
+          </section>
+        </div>
+      </details>
       <div className="split">
         <section className="panel">
           <div className="panel-heading">
@@ -529,6 +561,7 @@ function Dashboard({
             <button className="small-action" onClick={() => onOpenTab("Budget Lines")}>Open Budget Lines</button>
           </div>
           <DashboardBudgetList rows={budgetAttention} />
+          <p className="footnote">* Means the line is over the approved amount but within 10%.</p>
         </section>
       </div>
     </div>
@@ -594,7 +627,7 @@ function DashboardReviewList({ project, rows }: { project: Project; rows: Alloca
 }
 
 function DashboardBudgetList({ rows }: { rows: ReturnType<typeof rollupBudgetLines> }) {
-  if (!rows.length) return <p className="muted">No budget lines are over budget or using flexibility.</p>;
+  if (!rows.length) return <p className="muted">No budget lines are over budget.</p>;
   return (
     <div className="compact-list">
       {rows.map((row) => (
@@ -606,12 +639,21 @@ function DashboardBudgetList({ rows }: { rows: ReturnType<typeof rollupBudgetLin
             <span>{row.line.description}</span>
           </div>
           <div className="compact-meta">
-            <StatusPill status={row.state} />
+            <StatusPill status={simpleBudgetState(row.state)} />
             <strong>{currency(row.totalAgainstBudget)}</strong>
-            <span>ceiling {currency(row.flexCeiling)}</span>
+            <span>remaining {currency(row.remainingBeforeFlex)}</span>
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -759,7 +801,7 @@ function ReviewEditor({
 function BudgetLines({ rollups }: { rollups: ReturnType<typeof rollupBudgetLines> }) {
   return (
     <div className="screen">
-      <ScreenHeader title="Budget Lines" subtitle="Approved budget is the source of truth for line ceilings." />
+      <ScreenHeader title="Budget Lines" subtitle="Compare each approved budget line to confirmed purchases and items still needing review." />
       <div className="table-wrap">
         <table>
           <thead>
@@ -769,27 +811,63 @@ function BudgetLines({ rollups }: { rollups: ReturnType<typeof rollupBudgetLines
               <th>Object</th>
               <th>Description</th>
               <th>Approved</th>
-              <th>10% Ceiling</th>
-              <th>Against Budget</th>
+              <th>Confirmed Purchases</th>
+              <th>Needs Review</th>
               <th>Remaining</th>
             </tr>
           </thead>
           <tbody>
             {rollups.map((row) => (
               <tr key={row.line.id}>
-                <td><StatusPill status={row.state} /></td>
+                <td><StatusPill status={simpleBudgetState(row.state)} /></td>
                 <td>{row.line.functionCode}</td>
                 <td>{row.line.objectBucket}</td>
                 <td>{row.line.description}</td>
                 <td>{currency(row.line.approvedAmount)}</td>
-                <td>{currency(row.flexCeiling)}</td>
                 <td>{currency(row.totalAgainstBudget)}</td>
+                <td>{currency(row.currentReview)}</td>
                 <td>{currency(row.remainingBeforeFlex)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      <p className="footnote">* Means the line is over the approved amount but within 10%. Open advanced detail for the 10% ceiling and prior-year split.</p>
+      <details className="advanced-panel">
+        <summary>Advanced line detail</summary>
+        <div className="table-wrap embedded">
+          <table>
+            <thead>
+              <tr>
+                <th>Function</th>
+                <th>Object</th>
+                <th>Description</th>
+                <th>Prior Confirmed</th>
+                <th>Current Confirmed</th>
+                <th>All Confirmed</th>
+                <th>10% Ceiling</th>
+                <th>10% Margin Left</th>
+                <th>Internal State</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rollups.map((row) => (
+                <tr key={row.line.id}>
+                  <td>{row.line.functionCode}</td>
+                  <td>{row.line.objectBucket}</td>
+                  <td>{row.line.description}</td>
+                  <td>{currency(row.priorCarryover)}</td>
+                  <td>{currency(row.currentAllowable)}</td>
+                  <td>{currency(row.totalAgainstBudget)}</td>
+                  <td>{currency(row.flexCeiling)}</td>
+                  <td>{currency(row.flexRemaining)}</td>
+                  <td><StatusPill status={row.state} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </div>
   );
 }
@@ -916,8 +994,8 @@ function Breakdown({ project, mode }: { project: Project; mode: "function" | "ob
               <th>{mode === "function" ? "Function" : "Object"}</th>
               <th>Approved</th>
               <th>Payments</th>
-              <th>Allowable</th>
-              <th>Review</th>
+              <th>Confirmed Purchases</th>
+              <th>Needs Review</th>
             </tr>
           </thead>
           <tbody>
@@ -937,10 +1015,37 @@ function Breakdown({ project, mode }: { project: Project; mode: "function" | "ob
   );
 }
 
-function Carryover({ project, onImport }: { project: Project; onImport: (file?: File) => void }) {
+function Carryover({
+  project,
+  rollups,
+  totals,
+  onImport,
+}: {
+  project: Project;
+  rollups: ReturnType<typeof rollupBudgetLines>;
+  totals: ReturnType<typeof projectTotals>;
+  onImport: (file?: File) => void;
+}) {
+  const carryoverRows = rollups.filter((row) => row.priorCarryover > 0.01);
   return (
     <div className="screen">
-      <ScreenHeader title="Carryover" subtitle="Bring prior fiscal-year allowable spending forward against the active budget." />
+      <ScreenHeader title="Carryover" subtitle="Import prior-year projects when the same approved budget continues across fiscal years." />
+      <section className="panel">
+        <div className="panel-heading">
+          <h3>Carryover Summary</h3>
+        </div>
+        <p className="plain-note in-panel">
+          Imported prior-year confirmed purchases are included in Confirmed Purchases and Budget Remaining when they map
+          to this budget. If the prior project still has unresolved review items, the carryover total may be incomplete.
+        </p>
+        <div className="carryover-metrics">
+          <Metric label="Approved budget" value={currency(totals.approved)} />
+          <Metric label="Imported prior purchases" value={currency(totals.carryover)} />
+          <Metric label="Current confirmed purchases" value={currency(totals.allowable)} />
+          <Metric label="All confirmed purchases" value={currency(totals.grantToDate)} />
+          <Metric label="Budget remaining" value={currency(totals.remainingBeforeFlex)} />
+        </div>
+      </section>
       <label className="file-drop compact">
         <span>Import prior .recon project</span>
         <input type="file" accept=".recon" onChange={(event) => onImport(event.target.files?.[0])} />
@@ -967,6 +1072,51 @@ function Carryover({ project, onImport }: { project: Project; onImport: (file?: 
           </tbody>
         </table>
       </div>
+      <details className="advanced-panel">
+        <summary>Advanced carryover detail</summary>
+        <section className="panel">
+        <div className="panel-heading">
+          <h3>Carryover By Budget Line</h3>
+          <span className="muted">Prior-year confirmed purchases mapped onto this year&apos;s active budget.</span>
+        </div>
+        <div className="table-wrap embedded">
+          <table>
+            <thead>
+              <tr>
+                <th>Function</th>
+                <th>Object</th>
+                <th>Budget Line</th>
+                <th>Approved</th>
+                <th>Prior Confirmed</th>
+                <th>Current Confirmed</th>
+                <th>All Confirmed</th>
+                <th>Remaining</th>
+              </tr>
+            </thead>
+            <tbody>
+              {carryoverRows.length ? (
+                carryoverRows.map((row) => (
+                  <tr key={row.line.id}>
+                    <td>{row.line.functionCode}</td>
+                    <td>{row.line.objectBucket}</td>
+                    <td>{row.line.description}</td>
+                    <td>{currency(row.line.approvedAmount)}</td>
+                    <td>{currency(row.priorCarryover)}</td>
+                    <td>{currency(row.currentAllowable)}</td>
+                    <td>{currency(row.totalAgainstBudget)}</td>
+                    <td>{currency(row.remainingBeforeFlex)}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={8}>No carryover has been mapped to active budget lines yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        </section>
+      </details>
     </div>
   );
 }
@@ -1011,7 +1161,13 @@ function Kpi({ label, value, tone = "neutral" }: { label: string; value: string;
 }
 
 function StatusPill({ status }: { status: string }) {
-  return <span className={`pill ${status.toLowerCase().replace(/[^a-z]+/g, "-")}`}>{status}</span>;
+  const className = status.toLowerCase().replace(/[^a-z]+/g, "-").replace(/^-|-$/g, "");
+  return <span className={`pill ${className}`}>{status}</span>;
+}
+
+function simpleBudgetState(state: string): string {
+  if (state === "Flex Used") return "Within 10%*";
+  return state;
 }
 
 function priority(allocation: Allocation): number {

@@ -45,11 +45,12 @@ function addSummarySheet(workbook: ExcelJS.Workbook, project: Project) {
     ["Metric", "Amount"],
     ["Approved budget", totals.approved],
     ["Current-year invoice payments", totals.payments],
-    ["Prior carryover allowable", totals.carryover],
-    ["Allowable current-year spending", totals.allowable],
+    ["Imported prior confirmed purchases", totals.carryover],
+    ["Current confirmed purchases", totals.allowable],
+    ["All confirmed purchases", totals.grantToDate],
     ["Review-required dollars", totals.review],
     ["Not allowable dollars", totals.notAllowable],
-    ["Remaining before 10% flex", totals.remainingBeforeFlex],
+    ["Budget remaining", totals.remainingBeforeFlex],
     ["Account control variance", totals.variance],
   ]);
   styleSheet(sheet, [1, 7]);
@@ -65,14 +66,14 @@ function addBudgetLinesSheet(workbook: ExcelJS.Workbook, project: Project) {
     "Object bucket",
     "Description",
     "Approved",
-    "10% ceiling",
-    "Prior carryover",
-    "Current allowable",
+    "Approved + 10% reference",
+    "Prior confirmed purchases",
+    "Current confirmed purchases",
     "Review required",
     "Not allowable",
-    "Total against budget",
-    "Remaining before flex",
-    "Flex remaining",
+    "All confirmed purchases",
+    "Budget remaining",
+    "10% margin remaining",
     "State",
   ]);
   for (const row of rollupBudgetLines(activeBudgetLines(project), project.allocations, project.carryovers)) {
@@ -110,7 +111,7 @@ function addPurchasesSheet(workbook: ExcelJS.Workbook, project: Project) {
     "Object",
     "Rev Amount",
     "Payments",
-    "Allowable",
+    "Confirmed",
     "Not Allowable",
     "Matched budget description",
     "Review note",
@@ -149,7 +150,7 @@ function addBreakdownSheet(
   mode: "account" | "function" | "object",
 ) {
   const sheet = workbook.addWorksheet(name);
-  sheet.addRow(["Group", "Approved budget", "Invoice payments", "Allowable", "Review required", "Not allowable"]);
+  sheet.addRow(["Group", "Approved budget", "Invoice payments", "Confirmed purchases", "Review required", "Not allowable"]);
   const rows = new Map<string, { approved: number; payments: number; allowable: number; review: number; notAllowable: number }>();
   const budgetLines = activeBudgetLines(project);
   for (const line of budgetLines) {
@@ -219,7 +220,7 @@ function addBudgetAccountGapsSheet(workbook: ExcelJS.Workbook, project: Project)
 
 function addCarryoverSheet(workbook: ExcelJS.Workbook, project: Project) {
   const sheet = workbook.addWorksheet("Carryover");
-  sheet.addRow(["Project", "Fiscal year", "Imported at", "Budget line id", "Allowable amount", "Notes"]);
+  sheet.addRow(["Project", "Fiscal year", "Imported at", "Budget line id", "Confirmed amount", "Notes"]);
   for (const carryover of project.carryovers) {
     for (const [budgetLineId, amount] of Object.entries(carryover.allowableByBudgetLine)) {
       sheet.addRow([carryover.projectName, carryover.fiscalYear, carryover.importedAt, budgetLineId, amount, carryover.notes]);
@@ -271,8 +272,19 @@ export function projectTotals(project: Project) {
       0,
     ),
     variance: project.controlVariances.reduce((total, variance) => total + variance.varianceAmount, 0),
-    remainingBeforeFlex: budgetLines.reduce((total, line) => total + line.approvedAmount, 0)
-      - project.allocations.reduce((total, allocation) => total + allocation.allowableAmount, 0),
+    grantToDate:
+      project.allocations.reduce((total, allocation) => total + allocation.allowableAmount, 0) +
+      project.carryovers.reduce(
+        (total, carryover) => total + Object.values(carryover.allowableByBudgetLine).reduce((sum, value) => sum + value, 0),
+        0,
+      ),
+    remainingBeforeFlex:
+      budgetLines.reduce((total, line) => total + line.approvedAmount, 0) -
+      project.allocations.reduce((total, allocation) => total + allocation.allowableAmount, 0) -
+      project.carryovers.reduce(
+        (total, carryover) => total + Object.values(carryover.allowableByBudgetLine).reduce((sum, value) => sum + value, 0),
+        0,
+      ),
   };
 }
 

@@ -9,8 +9,8 @@ Grant Ledger imports an approved budget workbook, account-budget workbook, and i
 - Import approved budget, account summary, and invoice detail workbooks.
 - Match purchases to specific approved budget lines where possible.
 - Force weak function/object-only matches into human review.
-- Track allowable, not allowable, partially allowable, and review-required items.
-- Show budget-line 10% flexibility exposure.
+- Track confirmed, not allowable, partially allowable, and review-required items.
+- Mark budget lines that are over budget, with 10% detail kept in advanced views.
 - Pinpoint approved-budget vs account-budget setup gaps.
 - Save/reopen local `.recon` project files.
 - Autosave the latest local browser draft.
@@ -43,4 +43,3 @@ cd src-tauri && cargo check
 Do not commit district workbooks or saved project files. The repository ignores workbook files and `.recon` project bundles by default.
 
 Tests use synthetic fixture data that preserves the reconciliation scenarios without publishing real district source files.
-
