@@ -17,7 +17,7 @@ export async function exportReconciliationWorkbook(project: Project): Promise<Bl
 
   addSummarySheet(workbook, project);
   addBudgetLinesSheet(workbook, project);
-  addPurchasesSheet(workbook, project);
+  addSpendingSheet(workbook, project);
   addBreakdownSheet(workbook, "By Account", project, "account");
   addBreakdownSheet(workbook, "By Function", project, "function");
   addBreakdownSheet(workbook, "By Object", project, "object");
@@ -44,10 +44,10 @@ function addSummarySheet(workbook: ExcelJS.Workbook, project: Project) {
     [],
     ["Metric", "Amount"],
     ["Approved budget", totals.approved],
-    ["Current-year invoice payments", totals.payments],
-    ["Imported prior confirmed purchases", totals.carryover],
-    ["Current confirmed purchases", totals.allowable],
-    ["All confirmed purchases", totals.grantToDate],
+    ["Current-year spending", totals.payments],
+    ["Imported prior confirmed spending", totals.carryover],
+    ["Current confirmed spending", totals.allowable],
+    ["All confirmed spending", totals.grantToDate],
     ["Review-required dollars", totals.review],
     ["Not allowable dollars", totals.notAllowable],
     ["Budget remaining", totals.remainingBeforeFlex],
@@ -67,11 +67,11 @@ function addBudgetLinesSheet(workbook: ExcelJS.Workbook, project: Project) {
     "Description",
     "Approved",
     "Approved + 10% reference",
-    "Prior confirmed purchases",
-    "Current confirmed purchases",
+    "Prior confirmed spending",
+    "Current confirmed spending",
     "Review required",
     "Not allowable",
-    "All confirmed purchases",
+    "All confirmed spending",
     "Budget remaining",
     "10% margin remaining",
     "State",
@@ -98,14 +98,15 @@ function addBudgetLinesSheet(workbook: ExcelJS.Workbook, project: Project) {
   for (let col = 4; col <= 12; col++) moneyColumn(sheet, col);
 }
 
-function addPurchasesSheet(workbook: ExcelJS.Workbook, project: Project) {
-  const sheet = workbook.addWorksheet("Purchases");
+function addSpendingSheet(workbook: ExcelJS.Workbook, project: Project) {
+  const sheet = workbook.addWorksheet("Spending");
   sheet.addRow([
     "Status",
     "Match basis",
-    "PO",
+    "Source",
+    "Reference",
     "Date",
-    "Vendor",
+    "Vendor / Employee",
     "Account",
     "Function",
     "Object",
@@ -122,9 +123,10 @@ function addPurchasesSheet(workbook: ExcelJS.Workbook, project: Project) {
     sheet.addRow([
       allocation?.status ?? "Review Required",
       allocation?.matchBasis ?? "none",
-      purchase.poNumber,
+      spendingSource(purchase),
+      spendingReference(purchase),
       purchase.date,
-      purchase.vendorName,
+      spendingName(purchase),
       purchase.accountNumber,
       purchase.functionCode,
       purchase.objectCode,
@@ -137,10 +139,10 @@ function addPurchasesSheet(workbook: ExcelJS.Workbook, project: Project) {
     ]);
   }
   styleSheet(sheet, [1]);
-  sheet.getColumn(5).width = 32;
-  sheet.getColumn(13).width = 60;
-  sheet.getColumn(14).width = 42;
-  for (let col = 9; col <= 12; col++) moneyColumn(sheet, col);
+  sheet.getColumn(6).width = 32;
+  sheet.getColumn(14).width = 60;
+  sheet.getColumn(15).width = 42;
+  for (let col = 10; col <= 13; col++) moneyColumn(sheet, col);
 }
 
 function addBreakdownSheet(
@@ -150,7 +152,7 @@ function addBreakdownSheet(
   mode: "account" | "function" | "object",
 ) {
   const sheet = workbook.addWorksheet(name);
-  sheet.addRow(["Group", "Approved budget", "Invoice payments", "Confirmed purchases", "Review required", "Not allowable"]);
+  sheet.addRow(["Group", "Approved budget", "Current spending", "Confirmed spending", "Review required", "Not allowable"]);
   const rows = new Map<string, { approved: number; payments: number; allowable: number; review: number; notAllowable: number }>();
   const budgetLines = activeBudgetLines(project);
   for (const line of budgetLines) {
@@ -240,7 +242,7 @@ function addChecksSheet(workbook: ExcelJS.Workbook, project: Project) {
     ["Approved budget source total", totals.approved],
     ["Account YTD budget total", project.accounts.reduce((total, account) => total + account.ytdBudget, 0)],
     ["Account obligated total", project.accounts.reduce((total, account) => total + account.obligated, 0)],
-    ["Invoice payment total", totals.payments],
+    ["Current spending total", totals.payments],
     ["Account control variance total", totals.variance],
     [
       "Budget/account setup gap total",
@@ -292,6 +294,20 @@ function groupKey(line: BudgetLine | undefined, purchase: Purchase | undefined, 
   if (mode === "account") return purchase?.accountNumber ?? `${line?.functionCode ?? "Unknown"} / ${line?.objectBucket ?? "Unknown"}`;
   if (mode === "function") return purchase?.functionCode ?? line?.functionCode ?? "Unknown";
   return purchase?.objectBucket ?? line?.objectBucket ?? "Unknown";
+}
+
+function spendingSource(purchase: Purchase): string {
+  return purchase.sourceType === "staff" ? "Staff payroll" : "Invoice";
+}
+
+function spendingName(purchase: Purchase): string {
+  if (purchase.sourceType === "staff") return purchase.employeeName && purchase.employeeId ? `${purchase.employeeName} (${purchase.employeeId})` : purchase.vendorName;
+  return purchase.vendorName;
+}
+
+function spendingReference(purchase: Purchase): string {
+  if (purchase.sourceType === "staff") return purchase.status || "Payroll";
+  return purchase.poNumber ? `PO ${purchase.poNumber}` : purchase.requisitionNumber ? `Req ${purchase.requisitionNumber}` : "Invoice detail";
 }
 
 function getRow(

@@ -2,12 +2,12 @@
 
 Local-first grant reconciliation for K-12 finance teams.
 
-Grant Ledger imports an approved budget workbook, account-budget workbook, and invoice/purchase workbook, then helps users compare what was approved, what was spent, what needs review, and what remains. It is designed to run locally with no hosted database or domain.
+Grant Ledger imports an approved budget workbook, account-budget workbook, and invoice or staff spending workbooks, then helps users compare what was approved, what was spent, what needs review, and what remains. It is designed to run locally with no hosted database or domain.
 
 ## Current Features
 
-- Import approved budget, account summary, and invoice detail workbooks.
-- Match purchases to specific approved budget lines where possible.
+- Import approved budget, account summary, invoice detail, and staff payroll workbooks.
+- Match invoice and staff spending to specific approved budget lines where possible.
 - Force weak function/object-only matches into human review.
 - Track confirmed, not allowable, partially allowable, and review-required items.
 - Mark budget lines that are over budget, with 10% detail kept in advanced views.

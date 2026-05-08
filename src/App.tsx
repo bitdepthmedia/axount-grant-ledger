@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import axountLogo from "../img/axount_logo-bw-400w.png";
 import { clearLatestDraft, draftSummary, loadLatestDraft, saveLatestDraft, type DraftSummary } from "./lib/draftStore";
+import { saveProjectFile, type ProjectFileHandle, type ProjectSavePicker } from "./lib/fileSave";
 import { exportFileName, exportReconciliationWorkbook, projectTotals } from "./lib/exportWorkbook";
 import { rollupBudgetLines } from "./lib/matching";
 import { currency } from "./lib/money";
@@ -8,6 +9,7 @@ import { parseAllWorkbooks } from "./lib/parser";
 import {
   activeBudgetLines,
   audit,
+  buildCarryoverSource,
   createProject,
   downloadBlob,
   loadProjectBundle,
@@ -16,10 +18,9 @@ import {
   updateAllocation,
 } from "./lib/project";
 import { budgetAccountVariances, type BudgetAccountVariance } from "./lib/sourceChecks";
-import { normalizeText } from "./lib/text";
-import type { Allocation, BudgetLine, CarryoverSource, Project, ReviewStatus } from "./lib/types";
+import type { Allocation, BudgetLine, Project, Purchase, ReviewStatus } from "./lib/types";
 
-const tabs = ["Dashboard", "Review Queue", "Purchases", "Budget Lines", "Accounts", "Functions", "Objects", "Carryover", "Export"];
+const tabs = ["Dashboard", "Review Queue", "Spending", "Budget Lines", "Accounts", "Functions", "Objects", "Carryover", "Export"];
 
 type Tab = (typeof tabs)[number];
 const SIDEBAR_COLLAPSED_KEY = "axount-grant-ledger-sidebar-collapsed";
@@ -39,6 +40,7 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [draft, setDraft] = useState<Project | null>(null);
   const [draftStatus, setDraftStatus] = useState("No local draft loaded.");
+  const [projectFileHandle, setProjectFileHandle] = useState<ProjectFileHandle | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
   const autosaveTimer = useRef<number | null>(null);
   const [setup, setSetup] = useState({
@@ -47,7 +49,7 @@ export default function App() {
     budgetVersionLabel: "Original budget",
     ...defaultFiscalYear(),
   });
-  const [files, setFiles] = useState<{ budget?: File; accounts?: File; invoices?: File }>({});
+  const [files, setFiles] = useState<{ budget?: File; accounts?: File; invoices?: File; staff?: File }>({});
 
   const budgetLines = useMemo(() => (project ? activeBudgetLines(project) : []), [project]);
   const totals = useMemo(() => (project ? projectTotals(project) : null), [project]);
@@ -90,8 +92,8 @@ export default function App() {
   }, [project]);
 
   async function importProject() {
-    if (!files.budget || !files.accounts || !files.invoices) {
-      setMessage("Choose the budget, account, and invoice workbooks first.");
+    if (!files.budget || !files.accounts || (!files.invoices && !files.staff)) {
+      setMessage("Choose the budget, account, and at least one spending workbook: invoice detail or staff payroll.");
       return;
     }
     setBusy(true);
@@ -101,12 +103,14 @@ export default function App() {
         budgetFile: files.budget,
         accountsFile: files.accounts,
         invoicesFile: files.invoices,
+        staffFile: files.staff,
         budgetVersionLabel: setup.budgetVersionLabel,
       });
       const created = createProject({ ...setup, imports });
       setProject(created);
+      setProjectFileHandle(null);
       setTab("Dashboard");
-      setMessage("Project imported and autosaved locally. Use Save Project to download a portable .recon file.");
+      setMessage("Project imported and autosaved locally. Use Save Project to choose a .recon file.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Import failed.");
     } finally {
@@ -120,8 +124,9 @@ export default function App() {
     try {
       const loaded = await loadProjectBundle(file);
       setProject(loaded);
+      setProjectFileHandle(null);
       setTab("Dashboard");
-      setMessage("Project reopened and autosaved locally.");
+      setMessage("Project reopened and autosaved locally. Use Save Project to choose where this file should be overwritten.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Project open failed.");
     } finally {
@@ -132,8 +137,27 @@ export default function App() {
   async function saveProject() {
     if (!project) return;
     const blob = await saveProjectBundle(project);
-    downloadBlob(blob, projectFileName(project));
-    setMessage("Portable .recon project file downloaded. Local autosave is also active.");
+    const result = await saveProjectFile({
+      blob,
+      suggestedName: projectFileName(project),
+      handle: projectFileHandle,
+      picker: window as ProjectSavePicker,
+      fallbackDownload: downloadBlob,
+    });
+    if (result.handle) setProjectFileHandle(result.handle);
+    if (result.mode === "cancelled") {
+      setMessage("Save cancelled.");
+      return;
+    }
+    if (result.mode === "downloaded") {
+      setMessage("Project file downloaded. This browser cannot overwrite downloads directly, so rename the file if you need a separate copy.");
+      return;
+    }
+    setMessage(
+      result.mode === "picked"
+        ? `Project saved to ${result.fileName}. Future saves overwrite this file. Rename it in the save dialog when you want a separate file.`
+        : `Project saved to ${result.fileName}.`,
+    );
   }
 
   async function exportWorkbook() {
@@ -151,8 +175,9 @@ export default function App() {
   function resumeDraft() {
     if (!draft) return;
     setProject(draft);
+    setProjectFileHandle(null);
     setTab("Dashboard");
-    setMessage("Autosaved local draft resumed. Use Save Project to download a portable .recon file.");
+    setMessage("Autosaved local draft resumed. Use Save Project to choose a .recon file.");
   }
 
   async function discardDraft() {
@@ -163,6 +188,7 @@ export default function App() {
 
   function openHome() {
     setProject(null);
+    setProjectFileHandle(null);
     setTab("Dashboard");
     setFiles({});
     setMessage("Home opened. Start a new grant review or resume an autosaved draft.");
@@ -171,26 +197,7 @@ export default function App() {
   async function importCarryover(file?: File) {
     if (!file || !project) return;
     const prior = await loadProjectBundle(file);
-    const currentLines = activeBudgetLines(project);
-    const mapped: Record<string, number> = {};
-    let unmatched = 0;
-    for (const allocation of prior.allocations) {
-      if (allocation.allowableAmount <= 0 || !allocation.budgetLineId) continue;
-      const oldLine = activeBudgetLines(prior).find((line) => line.id === allocation.budgetLineId);
-      const currentLine = oldLine ? findCarryoverLine(oldLine, currentLines) : undefined;
-      if (currentLine) mapped[currentLine.id] = (mapped[currentLine.id] ?? 0) + allocation.allowableAmount;
-      else unmatched += allocation.allowableAmount;
-    }
-    const carryover: CarryoverSource = {
-      id: `carryover-${Date.now()}`,
-      projectName: prior.grantName,
-      fiscalYear: prior.fiscalYear,
-      importedAt: new Date().toISOString(),
-      allowableByBudgetLine: mapped,
-      notes: unmatched
-        ? `${currency(unmatched)} could not be mapped to the active budget version and should be reviewed.`
-        : "Mapped by matching function, object bucket, and budget description.",
-    };
+    const carryover = buildCarryoverSource(project, prior);
     setProject({
       ...project,
       carryovers: [...project.carryovers, carryover],
@@ -274,7 +281,7 @@ export default function App() {
           />
         ) : (
           <>
-            <SaveNotice draftStatus={draftStatus} onSave={saveProject} />
+            <SaveNotice draftStatus={draftStatus} projectFileName={projectFileHandle?.name} onSave={saveProject} />
             {tab === "Dashboard" && (
               <Dashboard
                 project={project}
@@ -287,7 +294,7 @@ export default function App() {
             {tab === "Review Queue" && (
               <ReviewQueue project={project} budgetLines={budgetLines} onChange={applyAllocation} />
             )}
-            {tab === "Purchases" && <Purchases project={project} budgetLines={budgetLines} onChange={applyAllocation} />}
+            {tab === "Spending" && <Spending project={project} budgetLines={budgetLines} onChange={applyAllocation} />}
             {tab === "Budget Lines" && <BudgetLines rollups={rollups} />}
             {tab === "Accounts" && <Accounts project={project} sourceVariances={sourceVariances} />}
             {tab === "Functions" && <Breakdown project={project} mode="function" />}
@@ -320,8 +327,8 @@ function ImportScreen({
     budgetVersionLabel: string;
   };
   setSetup: (setup: ReturnType<typeof defaultFiscalYear> & { grantName: string; grantCode: string; budgetVersionLabel: string }) => void;
-  files: { budget?: File; accounts?: File; invoices?: File };
-  setFiles: (files: { budget?: File; accounts?: File; invoices?: File }) => void;
+  files: { budget?: File; accounts?: File; invoices?: File; staff?: File };
+  setFiles: (files: { budget?: File; accounts?: File; invoices?: File; staff?: File }) => void;
   onImport: () => void;
   onOpen: (file?: File) => void;
   onResumeDraft: () => void;
@@ -335,7 +342,7 @@ function ImportScreen({
       <section className="hero-panel">
         <h2>Grant spending clarity that stays on your computer.</h2>
         <p>
-          Import the approved budget, account totals, and invoice detail. Grant Ledger matches purchases to budget
+          Import the approved budget, account totals, and invoice or staff detail. Grant Ledger matches spending to budget
           lines, flags weak matches for review, tracks carryover, and exports an audit-ready workbook.
         </p>
         {draft && (
@@ -402,7 +409,8 @@ function ImportScreen({
         <div className="file-grid">
           <FileInput label="Approved budget" file={files.budget} onFile={(budget) => setFiles({ ...files, budget })} />
           <FileInput label="Account summary" file={files.accounts} onFile={(accounts) => setFiles({ ...files, accounts })} />
-          <FileInput label="Invoice detail" file={files.invoices} onFile={(invoices) => setFiles({ ...files, invoices })} />
+          <FileInput label="Invoice detail (optional)" file={files.invoices} onFile={(invoices) => setFiles({ ...files, invoices })} />
+          <FileInput label="Staff payroll (optional)" file={files.staff} onFile={(staff) => setFiles({ ...files, staff })} />
         </div>
         <button className="primary" disabled={busy} onClick={onImport}>
           {busy ? "Importing..." : "Import and Match"}
@@ -412,14 +420,13 @@ function ImportScreen({
   );
 }
 
-function SaveNotice({ draftStatus, onSave }: { draftStatus: string; onSave: () => void }) {
+function SaveNotice({ draftStatus, projectFileName, onSave }: { draftStatus: string; projectFileName?: string; onSave: () => void }) {
   return (
     <div className="save-notice">
       <div>
         <strong>Autosave is local to this browser.</strong>
         <span>
-          {draftStatus} Download a `.recon` file when you need a portable project backup or want to move it to
-          another computer.
+          {draftStatus} {projectFileName ? `Save Project overwrites ${projectFileName}.` : "First save chooses a .recon file; later saves overwrite it."} Rename the file in the save dialog if you want a separate copy.
         </span>
       </div>
       <button className="primary" onClick={onSave}>
@@ -437,6 +444,20 @@ function FileInput({ label, file, onFile }: { label: string; file?: File; onFile
       <input type="file" accept=".xlsx" onChange={(event) => onFile(event.target.files?.[0])} />
     </label>
   );
+}
+
+function spendingSource(purchase: Purchase): string {
+  return purchase.sourceType === "staff" ? "Staff payroll" : "Invoice";
+}
+
+function spendingName(purchase: Purchase): string {
+  if (purchase.sourceType === "staff") return purchase.employeeName && purchase.employeeId ? `${purchase.employeeName} (${purchase.employeeId})` : purchase.vendorName;
+  return purchase.vendorName;
+}
+
+function spendingReference(purchase: Purchase): string {
+  if (purchase.sourceType === "staff") return purchase.status || "Payroll";
+  return purchase.poNumber ? `PO ${purchase.poNumber}` : purchase.requisitionNumber ? `Req ${purchase.requisitionNumber}` : "Invoice detail";
 }
 
 function Dashboard({
@@ -466,15 +487,15 @@ function Dashboard({
       <div className="kpi-grid">
         <Kpi label="Approved Budget" value={currency(totals.approved)} />
         <Kpi label="Loaded Account Budget" value={currency(accountBudget)} tone={budgetGapTotal ? "warn" : "good"} />
-        <Kpi label="Invoice Payments" value={currency(totals.payments)} />
-        <Kpi label="Confirmed Purchases" value={currency(totals.grantToDate)} />
+        <Kpi label="Current Spending" value={currency(totals.payments)} />
+        <Kpi label="Confirmed Spending" value={currency(totals.grantToDate)} />
         <Kpi label="Budget Remaining" value={currency(totals.remainingBeforeFlex)} tone={totals.remainingBeforeFlex < 0 ? "bad" : "good"} />
         <Kpi label="Needs Review" value={currency(totals.review)} tone="warn" />
         <Kpi label="Not Allowable" value={currency(totals.notAllowable)} tone="bad" />
         <Kpi label="Budget/Account Gaps" value={currency(budgetGapTotal)} tone={budgetGapTotal ? "warn" : "good"} />
       </div>
       <p className="plain-note">
-        Confirmed Purchases includes reviewed current-year purchases plus imported prior-year confirmed purchases.
+        Confirmed Spending includes reviewed current-year invoice and staff spending plus imported prior-year confirmed spending.
         Items still marked Needs Review are not counted as confirmed.
       </p>
       <section className="panel">
@@ -485,7 +506,7 @@ function Dashboard({
         <div className="attention-actions">
           <button onClick={() => onOpenTab("Review Queue")}>
             <strong>{reviewItems.length}</strong>
-            <span>purchase items need review</span>
+            <span>spending items need review</span>
           </button>
           <button onClick={() => onOpenTab("Budget Lines")}>
             <strong>{overBudget.length}</strong>
@@ -497,7 +518,7 @@ function Dashboard({
           </button>
           <button onClick={() => onOpenTab("Carryover")}>
             <strong>{currency(totals.carryover)}</strong>
-            <span>imported prior-year purchases</span>
+            <span>imported prior-year spending</span>
           </button>
         </div>
       </section>
@@ -508,9 +529,9 @@ function Dashboard({
             <h3>Detailed Budget Position</h3>
             <div className="carryover-metrics">
               <Metric label="Approved budget" value={currency(totals.approved)} />
-              <Metric label="Prior confirmed purchases" value={currency(totals.carryover)} />
-              <Metric label="Current confirmed purchases" value={currency(totals.allowable)} />
-              <Metric label="All confirmed purchases" value={currency(totals.grantToDate)} />
+              <Metric label="Prior confirmed spending" value={currency(totals.carryover)} />
+              <Metric label="Current confirmed spending" value={currency(totals.allowable)} />
+              <Metric label="All confirmed spending" value={currency(totals.grantToDate)} />
               <Metric label="Budget remaining" value={currency(totals.remainingBeforeFlex)} />
             </div>
           </section>
@@ -598,7 +619,7 @@ function BudgetAccountGapList({ rows }: { rows: BudgetAccountVariance[] }) {
 }
 
 function DashboardReviewList({ project, rows }: { project: Project; rows: Allocation[] }) {
-  if (!rows.length) return <p className="muted">No review-required purchase items.</p>;
+  if (!rows.length) return <p className="muted">No review-required spending items.</p>;
   return (
     <div className="compact-list">
       {rows.map((allocation) => {
@@ -608,10 +629,10 @@ function DashboardReviewList({ project, rows }: { project: Project; rows: Alloca
         return (
           <div className="compact-row" key={allocation.id}>
             <div>
-              <strong>{purchase?.vendorName || variance?.accountNumber || "Review item"}</strong>
+              <strong>{purchase ? spendingName(purchase) : variance?.accountNumber || "Review item"}</strong>
               <span>
                 {purchase
-                  ? `${purchase.functionCode} / ${purchase.objectCode} / PO ${purchase.poNumber}`
+                  ? `${purchase.functionCode} / ${purchase.objectCode} / ${spendingReference(purchase)}`
                   : variance?.accountDescription}
               </span>
             </div>
@@ -673,8 +694,8 @@ function ReviewQueue({ project, budgetLines, onChange }: ReviewProps) {
   );
 }
 
-function Purchases({ project, budgetLines, onChange }: ReviewProps) {
-  return <AllocationTable title="Purchases" rows={project.allocations.filter((row) => row.purchaseId)} project={project} budgetLines={budgetLines} onChange={onChange} />;
+function Spending({ project, budgetLines, onChange }: ReviewProps) {
+  return <AllocationTable title="Spending" rows={project.allocations.filter((row) => row.purchaseId)} project={project} budgetLines={budgetLines} onChange={onChange} />;
 }
 
 interface ReviewProps {
@@ -693,7 +714,7 @@ function AllocationTable({ title, rows, project, budgetLines, onChange }: Review
             <tr>
               <th>Status</th>
               <th>Basis</th>
-              <th>Purchase / Variance</th>
+              <th>Spending / Variance</th>
               <th>Amount</th>
               <th>Budget Line</th>
               <th>Review Decision</th>
@@ -710,9 +731,9 @@ function AllocationTable({ title, rows, project, budgetLines, onChange }: Review
                   <td><StatusPill status={allocation.status} /></td>
                   <td>{allocation.matchBasis}</td>
                   <td>
-                    <strong>{purchase?.vendorName || variance?.accountNumber}</strong>
+                    <strong>{purchase ? spendingName(purchase) : variance?.accountNumber}</strong>
                     <span className="muted block">
-                      {purchase ? `${purchase.accountNumber} / PO ${purchase.poNumber}` : variance?.accountDescription}
+                      {purchase ? `${spendingSource(purchase)} / ${purchase.accountNumber} / ${spendingReference(purchase)}` : variance?.accountDescription}
                     </span>
                     <span className="muted block">{allocation.reasons.join(" ")}</span>
                   </td>
@@ -801,7 +822,7 @@ function ReviewEditor({
 function BudgetLines({ rollups }: { rollups: ReturnType<typeof rollupBudgetLines> }) {
   return (
     <div className="screen">
-      <ScreenHeader title="Budget Lines" subtitle="Compare each approved budget line to confirmed purchases and items still needing review." />
+      <ScreenHeader title="Budget Lines" subtitle="Compare each approved budget line to confirmed spending and items still needing review." />
       <div className="table-wrap">
         <table>
           <thead>
@@ -811,7 +832,7 @@ function BudgetLines({ rollups }: { rollups: ReturnType<typeof rollupBudgetLines
               <th>Object</th>
               <th>Description</th>
               <th>Approved</th>
-              <th>Confirmed Purchases</th>
+              <th>Confirmed Spending</th>
               <th>Needs Review</th>
               <th>Remaining</th>
             </tr>
@@ -993,8 +1014,8 @@ function Breakdown({ project, mode }: { project: Project; mode: "function" | "ob
             <tr>
               <th>{mode === "function" ? "Function" : "Object"}</th>
               <th>Approved</th>
-              <th>Payments</th>
-              <th>Confirmed Purchases</th>
+              <th>Current Spending</th>
+              <th>Confirmed Spending</th>
               <th>Needs Review</th>
             </tr>
           </thead>
@@ -1035,14 +1056,14 @@ function Carryover({
           <h3>Carryover Summary</h3>
         </div>
         <p className="plain-note in-panel">
-          Imported prior-year confirmed purchases are included in Confirmed Purchases and Budget Remaining when they map
+          Imported prior-year confirmed spending is included in Confirmed Spending and Budget Remaining when it maps
           to this budget. If the prior project still has unresolved review items, the carryover total may be incomplete.
         </p>
         <div className="carryover-metrics">
           <Metric label="Approved budget" value={currency(totals.approved)} />
-          <Metric label="Imported prior purchases" value={currency(totals.carryover)} />
-          <Metric label="Current confirmed purchases" value={currency(totals.allowable)} />
-          <Metric label="All confirmed purchases" value={currency(totals.grantToDate)} />
+          <Metric label="Imported prior spending" value={currency(totals.carryover)} />
+          <Metric label="Current confirmed spending" value={currency(totals.allowable)} />
+          <Metric label="All confirmed spending" value={currency(totals.grantToDate)} />
           <Metric label="Budget remaining" value={currency(totals.remainingBeforeFlex)} />
         </div>
       </section>
@@ -1077,7 +1098,7 @@ function Carryover({
         <section className="panel">
         <div className="panel-heading">
           <h3>Carryover By Budget Line</h3>
-          <span className="muted">Prior-year confirmed purchases mapped onto this year&apos;s active budget.</span>
+          <span className="muted">Prior-year confirmed spending mapped onto this year&apos;s active budget.</span>
         </div>
         <div className="table-wrap embedded">
           <table>
@@ -1126,13 +1147,13 @@ function ExportView({ project, onSave, onExport }: { project: Project; onSave: (
     <div className="screen">
       <ScreenHeader title="Export" subtitle="Save the working project or download a reconciliation workbook." />
       <div className="export-actions">
-        <button className="primary" onClick={onSave}>Download .recon Project</button>
+        <button className="primary" onClick={onSave}>Save .recon Project</button>
         <button className="secondary" onClick={onExport}>Download Excel Workbook</button>
       </div>
       <section className="panel">
         <h3>Export includes</h3>
         <p>
-          Summary, budget-line reconciliation, purchase allocations, account/function/object breakdowns, review log,
+          Summary, budget-line reconciliation, spending allocations, account/function/object breakdowns, review log,
           carryover detail, source checks, and account-control variances for {project.fiscalYear}.
         </p>
       </section>
@@ -1178,15 +1199,6 @@ function priority(allocation: Allocation): number {
   return 1;
 }
 
-function findCarryoverLine(oldLine: BudgetLine, currentLines: BudgetLine[]): BudgetLine | undefined {
-  return currentLines.find(
-    (line) =>
-      line.functionCode === oldLine.functionCode &&
-      line.objectBucket === oldLine.objectBucket &&
-      normalizeText(line.description) === normalizeText(oldLine.description),
-  );
-}
-
 function formatDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -1202,7 +1214,7 @@ function tabIcon(tab: Tab): string {
   const icons: Record<Tab, string> = {
     Dashboard: "D",
     "Review Queue": "R",
-    Purchases: "P",
+    Spending: "S",
     "Budget Lines": "B",
     Accounts: "A",
     Functions: "F",

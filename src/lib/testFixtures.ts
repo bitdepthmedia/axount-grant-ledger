@@ -105,3 +105,75 @@ export function syntheticInvoicesWorkbook(): ExcelJS.Workbook {
   sheet.addRow(["", "", "Count: 5", "", "", "", "", 17164.96, 17164.96, 0, 0]);
   return workbook;
 }
+
+export function syntheticStaffWorkbook(): ExcelJS.Workbook {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow([
+    "Account",
+    "Description",
+    "Trans Date",
+    "Emp #",
+    "Employee",
+    "Amount",
+    "Pay Item Code",
+    "Trans Master ID",
+    "Trans #",
+    "Plan ID",
+    "Option Code",
+  ]);
+  sheet.addRow([
+    "11-125-1970-001-000-2904",
+    "23G SMMR SCH TCHRS",
+    new Date("2025-07-03"),
+    "102148",
+    "Ramsey, Michele D",
+    780,
+    "0570",
+    "268609",
+    "",
+    "",
+    "",
+  ]);
+  sheet.addRow([
+    "11-125-1970-001-000-2904",
+    "23G SMMR SCH TCHRS",
+    new Date("2025-07-18"),
+    "102148",
+    "Ramsey, Michele D",
+    975,
+    "0570",
+    "268610",
+    "",
+    "",
+    "",
+  ]);
+  sheet.addRow([
+    "11-125-2820-001-000-2904",
+    "23G RETIREMENT",
+    new Date("2025-07-03"),
+    "102148",
+    "Ramsey, Michele D",
+    211.85,
+    "5300",
+    "268609",
+    "",
+    "",
+    "",
+  ]);
+  sheet.addRow([
+    "11-125-2830-001-000-2904",
+    "23G FICA",
+    new Date("2025-07-03"),
+    "102148",
+    "Ramsey, Michele D",
+    48.36,
+    "J101ER",
+    "268609",
+    "",
+    "",
+    "",
+  ]);
+  sheet.addRow(["Count: 4", "", "", "", "", 2015.21]);
+  return workbook;
+}

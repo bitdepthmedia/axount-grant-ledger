@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { accountParts, objectBucketFromBudgetColumn, objectBucketFromCode } from "./codes";
 import { stableId } from "./ids";
 import { parseMoney } from "./money";
-import type { AccountSummary, BudgetLine, BudgetVersion, Purchase, SourceFileSnapshot, WorkbookImportResult } from "./types";
+import type { AccountSummary, BudgetLine, BudgetVersion, ObjectBucket, Purchase, SourceFileSnapshot, WorkbookImportResult } from "./types";
 
 const BUDGET_AMOUNT_COLUMNS = [
   "Salaries 1000",
@@ -14,6 +14,23 @@ const BUDGET_AMOUNT_COLUMNS = [
   "Capital Outlay 6000",
   "Other Expenses 7000, 8000",
 ];
+
+interface StaffGroup {
+  firstRowNumber: number;
+  employeeId: string;
+  employeeName: string;
+  accountNumber: string;
+  accountDescription: string;
+  firstDate: string;
+  lastDate: string;
+  functionCode: string;
+  objectCode: string;
+  objectBucket: ObjectBucket;
+  paymentAmount: number;
+  payItemCodes: Set<string>;
+  sourceAccounts: Set<string>;
+  sourceAccountAmounts: Map<string, number>;
+}
 
 export async function workbookFromBuffer(buffer: ArrayBuffer): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
@@ -26,6 +43,30 @@ export async function parseBudgetBuffer(buffer: ArrayBuffer, sourceFileName: str
     return parseBudgetWorkbook(await workbookFromBuffer(buffer), sourceFileName, label);
   } catch {
     return parseBudgetRows(await simpleRowsFromXlsx(buffer), sourceFileName, label);
+  }
+}
+
+export async function parseAccountsBuffer(buffer: ArrayBuffer): Promise<AccountSummary[]> {
+  try {
+    return parseAccountsWorkbook(await workbookFromBuffer(buffer));
+  } catch {
+    return parseAccountsRows(await simpleRowsFromXlsx(buffer));
+  }
+}
+
+export async function parseInvoiceBuffer(buffer: ArrayBuffer): Promise<Purchase[]> {
+  try {
+    return parseInvoiceWorkbook(await workbookFromBuffer(buffer));
+  } catch {
+    return parseInvoiceRows(await simpleRowsFromXlsx(buffer));
+  }
+}
+
+export async function parseStaffBuffer(buffer: ArrayBuffer): Promise<Purchase[]> {
+  try {
+    return parseStaffWorkbook(await workbookFromBuffer(buffer));
+  } catch {
+    return parseStaffRows(await simpleRowsFromXlsx(buffer));
   }
 }
 
@@ -43,31 +84,35 @@ export async function fileToSourceSnapshot(file: File, role: SourceFileSnapshot[
 export async function parseAllWorkbooks(input: {
   budgetFile: File;
   accountsFile: File;
-  invoicesFile: File;
+  invoicesFile?: File;
+  staffFile?: File;
   budgetVersionLabel: string;
 }): Promise<WorkbookImportResult> {
-  const [budgetBuffer, accountsBuffer, invoicesBuffer] = await Promise.all([
+  const [budgetBuffer, accountsBuffer, invoicesBuffer, staffBuffer] = await Promise.all([
     input.budgetFile.arrayBuffer(),
     input.accountsFile.arrayBuffer(),
-    input.invoicesFile.arrayBuffer(),
+    input.invoicesFile?.arrayBuffer(),
+    input.staffFile?.arrayBuffer(),
   ]);
 
-  const [budgetWorkbook, accountsWorkbook, invoicesWorkbook, sourceFiles] = await Promise.all([
+  const [budgetWorkbook, accounts, invoices, staff, sourceFiles] = await Promise.all([
     parseBudgetBuffer(budgetBuffer, input.budgetFile.name, input.budgetVersionLabel),
-    workbookFromBuffer(accountsBuffer),
-    workbookFromBuffer(invoicesBuffer),
+    parseAccountsBuffer(accountsBuffer),
+    invoicesBuffer ? parseInvoiceBuffer(invoicesBuffer) : [],
+    staffBuffer ? parseStaffBuffer(staffBuffer) : [],
     Promise.all([
       fileToSourceSnapshot(input.budgetFile, "budget"),
       fileToSourceSnapshot(input.accountsFile, "accounts"),
-      fileToSourceSnapshot(input.invoicesFile, "invoices"),
+      input.invoicesFile ? fileToSourceSnapshot(input.invoicesFile, "invoices") : undefined,
+      input.staffFile ? fileToSourceSnapshot(input.staffFile, "staff") : undefined,
     ]),
   ]);
 
   return {
     budgetVersion: budgetWorkbook,
-    accounts: parseAccountsWorkbook(accountsWorkbook),
-    purchases: parseInvoiceWorkbook(invoicesWorkbook),
-    sourceFiles,
+    accounts,
+    purchases: [...invoices, ...staff],
+    sourceFiles: sourceFiles.filter((sourceFile): sourceFile is SourceFileSnapshot => Boolean(sourceFile)),
   };
 }
 
@@ -134,23 +179,27 @@ function sheetToMatrix(sheet: ExcelJS.Worksheet): string[][] {
 export function parseAccountsWorkbook(workbook: ExcelJS.Workbook): AccountSummary[] {
   const sheet = workbook.worksheets[0];
   if (!sheet) throw new Error("Account workbook has no worksheets.");
-  const headers = headerMap(sheet.getRow(1));
+  return parseAccountsRows(sheetToMatrix(sheet));
+}
+
+function parseAccountsRows(matrix: string[][]): AccountSummary[] {
+  const headers = headerMapValues(matrix[0] ?? []);
   const rows: AccountSummary[] = [];
 
-  sheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const accountNumber = cellText(row.getCell(headers.Account));
+  matrix.forEach((row, rowIndex) => {
+    if (rowIndex === 0) return;
+    const accountNumber = textAt(row, headers.Account);
     if (!isAccountNumber(accountNumber)) return;
     const parts = accountParts(accountNumber);
-    const ytdBudget = parseMoney(row.getCell(headers["YTD Budget"]).value);
-    const ytdActual = parseMoney(row.getCell(headers["YTD Actual"]).value);
-    const ytdEncum = parseMoney(row.getCell(headers["YTD Encum"]).value);
-    const reqReserve = parseMoney(row.getCell(headers["Req Reserve"]).value);
+    const ytdBudget = parseMoney(textAt(row, headers["YTD Budget"]));
+    const ytdActual = parseMoney(textAt(row, headers["YTD Actual"]));
+    const ytdEncum = parseMoney(textAt(row, headers["YTD Encum"]));
+    const reqReserve = parseMoney(textAt(row, headers["Req Reserve"]));
 
     rows.push({
       id: stableId("account", [accountNumber]),
       accountNumber,
-      description: cellText(row.getCell(headers.Description)),
+      description: textAt(row, headers.Description),
       functionCode: parts.functionCode,
       objectCode: parts.objectCode,
       objectBucket: objectBucketFromCode(parts.objectCode),
@@ -159,7 +208,7 @@ export function parseAccountsWorkbook(workbook: ExcelJS.Workbook): AccountSummar
       ytdEncum,
       reqReserve,
       obligated: ytdActual + ytdEncum + reqReserve,
-      balance: parseMoney(row.getCell(headers.Balance).value),
+      balance: parseMoney(textAt(row, headers.Balance)),
     });
   });
 
@@ -169,31 +218,37 @@ export function parseAccountsWorkbook(workbook: ExcelJS.Workbook): AccountSummar
 export function parseInvoiceWorkbook(workbook: ExcelJS.Workbook): Purchase[] {
   const sheet = workbook.worksheets[0];
   if (!sheet) throw new Error("Invoice workbook has no worksheets.");
-  const headers = headerMap(sheet.getRow(1));
+  return parseInvoiceRows(sheetToMatrix(sheet));
+}
+
+function parseInvoiceRows(matrix: string[][]): Purchase[] {
+  const headers = headerMapValues(matrix[0] ?? []);
   const rows: Purchase[] = [];
 
-  sheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const accountNumber = cellText(row.getCell(headers["Display Account"]));
+  matrix.forEach((row, rowIndex) => {
+    if (rowIndex === 0) return;
+    const rowNumber = rowIndex + 1;
+    const accountNumber = textAt(row, headers["Display Account"]);
     if (!isAccountNumber(accountNumber)) return;
     const parts = accountParts(accountNumber);
-    const functionCode = cellText(row.getCell(headers.Function)) || parts.functionCode;
-    const objectCode = cellText(row.getCell(headers.Object)) || parts.objectCode;
-    const poNumber = cellText(row.getCell(headers["PO #"]));
-    const requisitionNumber = cellText(row.getCell(headers["Req #"]));
+    const functionCode = textAt(row, headers.Function) || parts.functionCode;
+    const objectCode = textAt(row, headers.Object) || parts.objectCode;
+    const poNumber = textAt(row, headers["PO #"]);
+    const requisitionNumber = textAt(row, headers["Req #"]);
 
     rows.push({
       id: stableId("purchase", [rowNumber, poNumber || requisitionNumber || accountNumber]),
+      sourceType: "invoice",
       poNumber,
       accountNumber,
-      accountDescription: cellText(row.getCell(headers["Acct Desc"])),
-      date: dateText(row.getCell(headers.Date).value),
-      vendorCode: cellText(row.getCell(headers.Vendor)),
-      vendorName: cellText(row.getCell(headers.Name)),
-      revAmount: parseMoney(row.getCell(headers["Rev Amount"]).value),
-      paymentAmount: parseMoney(row.getCell(headers.Payments).value),
-      inProcessAmount: parseMoney(row.getCell(headers["In-Process"]).value),
-      status: cellText(row.getCell(headers.Status)),
+      accountDescription: textAt(row, headers["Acct Desc"]),
+      date: dateText(textAt(row, headers.Date)),
+      vendorCode: textAt(row, headers.Vendor),
+      vendorName: textAt(row, headers.Name),
+      revAmount: parseMoney(textAt(row, headers["Rev Amount"])),
+      paymentAmount: parseMoney(textAt(row, headers.Payments)),
+      inProcessAmount: parseMoney(textAt(row, headers["In-Process"])),
+      status: textAt(row, headers.Status),
       requisitionNumber,
       functionCode,
       objectCode,
@@ -204,11 +259,89 @@ export function parseInvoiceWorkbook(workbook: ExcelJS.Workbook): Purchase[] {
   return rows;
 }
 
-function headerMap(row: ExcelJS.Row): Record<string, number> {
+export function parseStaffWorkbook(workbook: ExcelJS.Workbook): Purchase[] {
+  const sheet = workbook.worksheets[0];
+  if (!sheet) throw new Error("Staff workbook has no worksheets.");
+  return parseStaffRows(sheetToMatrix(sheet));
+}
+
+function parseStaffRows(matrix: string[][]): Purchase[] {
+  const headers = headerMapValues(matrix[0] ?? []);
+  const groups = new Map<string, StaffGroup>();
+
+  matrix.forEach((row, rowIndex) => {
+    if (rowIndex === 0) return;
+    const rowNumber = rowIndex + 1;
+    const sourceAccountNumber = textAt(row, headers.Account);
+    if (!isAccountNumber(sourceAccountNumber)) return;
+    const parts = accountParts(sourceAccountNumber);
+    const normalized = normalizedStaffAccount(sourceAccountNumber, parts.objectCode);
+    const employeeId = textAt(row, headers["Emp #"]);
+    const employeeName = textAt(row, headers.Employee).replace(/\s+/g, " ");
+    const functionCode = parts.functionCode;
+    const objectCode = normalized.objectCode;
+    const key = [employeeId, normalized.accountNumber, functionCode, objectCode].join("::");
+    const group = groups.get(key) ?? {
+      firstRowNumber: rowNumber,
+      employeeId,
+      employeeName,
+      accountNumber: normalized.accountNumber,
+      accountDescription: normalized.isBenefits
+        ? `Pooled benefits for ${employeeName || employeeId}`
+        : textAt(row, headers.Description),
+      firstDate: dateText(textAt(row, headers["Trans Date"])),
+      lastDate: dateText(textAt(row, headers["Trans Date"])),
+      functionCode,
+      objectCode,
+      objectBucket: objectBucketFromCode(objectCode),
+      paymentAmount: 0,
+      payItemCodes: new Set<string>(),
+      sourceAccounts: new Set<string>(),
+      sourceAccountAmounts: new Map<string, number>(),
+    };
+    const amount = parseMoney(textAt(row, headers.Amount));
+    group.paymentAmount += amount;
+    group.firstDate = minDateText(group.firstDate, dateText(textAt(row, headers["Trans Date"])));
+    group.lastDate = maxDateText(group.lastDate, dateText(textAt(row, headers["Trans Date"])));
+    const payItemCode = textAt(row, headers["Pay Item Code"]);
+    if (payItemCode) group.payItemCodes.add(payItemCode);
+    group.sourceAccounts.add(sourceAccountNumber);
+    group.sourceAccountAmounts.set(sourceAccountNumber, (group.sourceAccountAmounts.get(sourceAccountNumber) ?? 0) + amount);
+    groups.set(key, group);
+  });
+
+  return [...groups.values()]
+    .map((group) => ({
+      id: stableId("staff-purchase", [group.employeeId, group.accountNumber, group.functionCode, group.objectCode]),
+      sourceType: "staff" as const,
+      poNumber: "",
+      accountNumber: group.accountNumber,
+      sourceAccountAmounts: Object.fromEntries(group.sourceAccountAmounts),
+      accountDescription:
+        group.sourceAccounts.size > 1
+          ? `${group.accountDescription} (${group.sourceAccounts.size} benefit accounts)`
+          : group.accountDescription,
+      date: group.firstDate === group.lastDate ? group.firstDate : `${group.firstDate} to ${group.lastDate}`,
+      vendorCode: group.employeeId,
+      vendorName: group.employeeName ? `${group.employeeName} (${group.employeeId})` : group.employeeId,
+      employeeId: group.employeeId,
+      employeeName: group.employeeName,
+      revAmount: group.paymentAmount,
+      paymentAmount: group.paymentAmount,
+      inProcessAmount: 0,
+      status: `Payroll${group.payItemCodes.size ? ` / ${[...group.payItemCodes].sort().join(", ")}` : ""}`,
+      requisitionNumber: "",
+      functionCode: group.functionCode,
+      objectCode: group.objectCode,
+      objectBucket: group.objectBucket,
+    }))
+    .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber) || a.vendorName.localeCompare(b.vendorName));
+}
+
+function headerMapValues(row: string[]): Record<string, number> {
   const map: Record<string, number> = {};
-  row.eachCell((cell, colNumber) => {
-    const label = cellText(cell);
-    if (label) map[label] = colNumber;
+  row.forEach((label, index) => {
+    if (label) map[label] = index;
   });
   return map;
 }
@@ -231,13 +364,44 @@ function cellText(cell: ExcelJS.Cell): string {
   return String(value).trim();
 }
 
-function dateText(value: ExcelJS.CellValue): string {
+function textAt(row: string[], column: number | undefined): string {
+  if (column == null || column < 0) return "";
+  return String(row[column] ?? "").trim();
+}
+
+function dateText(value: ExcelJS.CellValue | string): string {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (typeof value === "number" || (typeof value === "string" && /^\d+(\.\d+)?$/.test(value))) {
+    const serial = Number(value);
+    if (serial > 20000 && serial < 80000) {
+      const date = new Date(Date.UTC(1899, 11, 30) + serial * 24 * 60 * 60 * 1000);
+      return date.toISOString().slice(0, 10);
+    }
+  }
   return String(value ?? "").slice(0, 10);
 }
 
 function isAccountNumber(value: string): boolean {
   return /^\d{2}-\d{3}-\d{4}-/.test(value);
+}
+
+function normalizedStaffAccount(accountNumber: string, objectCode: string): { accountNumber: string; objectCode: string; isBenefits: boolean } {
+  if (!objectCode.startsWith("2")) return { accountNumber, objectCode, isBenefits: false };
+  const parts = accountNumber.split("-");
+  parts[2] = "2000";
+  return { accountNumber: parts.join("-"), objectCode: "2000", isBenefits: true };
+}
+
+function minDateText(left: string, right: string): string {
+  if (!left) return right;
+  if (!right) return left;
+  return left < right ? left : right;
+}
+
+function maxDateText(left: string, right: string): string {
+  if (!left) return right;
+  if (!right) return left;
+  return left > right ? left : right;
 }
 
 async function arrayBufferToBase64(buffer: ArrayBuffer): Promise<string> {

@@ -13,7 +13,7 @@ export type MatchBasis = "specific-budget-line" | "function-object" | "none" | "
 
 export interface SourceFileSnapshot {
   id: string;
-  role: "budget" | "accounts" | "invoices";
+  role: "budget" | "accounts" | "invoices" | "staff";
   name: string;
   bytesBase64?: string;
   importedAt: string;
@@ -55,12 +55,16 @@ export interface AccountSummary {
 
 export interface Purchase {
   id: string;
+  sourceType?: "invoice" | "staff";
   poNumber: string;
   accountNumber: string;
+  sourceAccountAmounts?: Record<string, number>;
   accountDescription: string;
   date: string;
   vendorCode: string;
   vendorName: string;
+  employeeId?: string;
+  employeeName?: string;
   revAmount: number;
   paymentAmount: number;
   inProcessAmount: number;

@@ -1,7 +1,9 @@
 import JSZip from "jszip";
 import { makeId } from "./ids";
 import { createAllocations, createControlVariances, createVarianceAllocations } from "./matching";
-import type { Allocation, AuditEvent, Project, WorkbookImportResult } from "./types";
+import { currency } from "./money";
+import { normalizeText } from "./text";
+import type { Allocation, AuditEvent, BudgetLine, CarryoverSource, Project, WorkbookImportResult } from "./types";
 
 export function createProject(input: {
   grantName: string;
@@ -35,7 +37,7 @@ export function createProject(input: {
     allocations,
     carryovers: [],
     controlVariances,
-    auditLog: [audit("Project created", "Imported budget, account, and invoice workbooks.")],
+    auditLog: [audit("Project created", "Imported budget, account, and spending workbooks.")],
   };
 }
 
@@ -58,6 +60,51 @@ export function updateAllocation(project: Project, allocation: Allocation): Proj
   };
 }
 
+export function buildCarryoverSource(current: Project, prior: Project): CarryoverSource {
+  const currentLines = activeBudgetLines(current);
+  const priorLines = activeBudgetLines(prior);
+  const mapped: Record<string, number> = {};
+  let forwardedMapped = 0;
+  let unmatched = 0;
+
+  function addAmount(budgetLineId: string | undefined, amount: number, source: "direct" | "forwarded") {
+    if (!budgetLineId || amount <= 0) return;
+    const oldLine = priorLines.find((line) => line.id === budgetLineId);
+    const currentLine = oldLine ? findCarryoverLine(oldLine, currentLines) : undefined;
+    if (!currentLine) {
+      unmatched += amount;
+      return;
+    }
+    mapped[currentLine.id] = (mapped[currentLine.id] ?? 0) + amount;
+    if (source === "forwarded") forwardedMapped += amount;
+  }
+
+  for (const allocation of prior.allocations) {
+    addAmount(allocation.budgetLineId, allocation.allowableAmount, "direct");
+  }
+  for (const carryover of prior.carryovers) {
+    for (const [budgetLineId, amount] of Object.entries(carryover.allowableByBudgetLine)) {
+      addAmount(budgetLineId, amount, "forwarded");
+    }
+  }
+
+  const hasForwardedCarryover = forwardedMapped > 0;
+  const notes = unmatched
+    ? `${currency(unmatched)} could not be mapped to the active budget version and should be reviewed.`
+    : hasForwardedCarryover
+      ? "Mapped current-year spending and prior imported carryover by matching function, object bucket, and budget description."
+      : "Mapped by matching function, object bucket, and budget description.";
+
+  return {
+    id: `carryover-${Date.now()}`,
+    projectName: prior.grantName,
+    fiscalYear: prior.fiscalYear,
+    importedAt: new Date().toISOString(),
+    allowableByBudgetLine: mapped,
+    notes,
+  };
+}
+
 export async function saveProjectBundle(project: Project): Promise<Blob> {
   const zip = new JSZip();
   zip.file("project.json", JSON.stringify(project, null, 2));
@@ -66,6 +113,15 @@ export async function saveProjectBundle(project: Project): Promise<Blob> {
     if (source.bytesBase64) sources?.file(source.name, source.bytesBase64, { base64: true });
   }
   return zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+}
+
+function findCarryoverLine(oldLine: BudgetLine, currentLines: BudgetLine[]): BudgetLine | undefined {
+  return currentLines.find(
+    (line) =>
+      line.functionCode === oldLine.functionCode &&
+      line.objectBucket === oldLine.objectBucket &&
+      normalizeText(line.description) === normalizeText(oldLine.description),
+  );
 }
 
 export async function loadProjectBundle(file: File): Promise<Project> {

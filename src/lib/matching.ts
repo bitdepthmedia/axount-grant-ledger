@@ -19,6 +19,22 @@ export function createAllocations(purchases: Purchase[], budgetLines: BudgetLine
       (line) => line.functionCode === purchase.functionCode && line.objectBucket === purchase.objectBucket,
     );
 
+    if (purchase.sourceType === "staff" && sameBucket.length === 1) {
+      return {
+        id: stableId("allocation", [purchase.id]),
+        purchaseId: purchase.id,
+        budgetLineId: sameBucket[0].id,
+        status: "Allowable",
+        matchBasis: "specific-budget-line",
+        confidence: 75,
+        allowableAmount: purchase.paymentAmount,
+        nonAllowableAmount: 0,
+        reviewNote: "",
+        candidateLineIds: [sameBucket[0].id],
+        reasons: ["Staff payroll matched the only approved budget line for this function and object bucket."],
+      };
+    }
+
     if (best && best.score >= 70) {
       return {
         id: stableId("allocation", [purchase.id]),
@@ -107,7 +123,13 @@ export function scoreCandidates(purchase: Purchase, budgetLines: BudgetLine[]): 
 export function createControlVariances(accounts: AccountSummary[], purchases: Purchase[]): ControlVariance[] {
   const paidByAccount = new Map<string, number>();
   for (const purchase of purchases) {
-    paidByAccount.set(purchase.accountNumber, (paidByAccount.get(purchase.accountNumber) ?? 0) + purchase.paymentAmount);
+    if (purchase.sourceAccountAmounts) {
+      for (const [accountNumber, amount] of Object.entries(purchase.sourceAccountAmounts)) {
+        paidByAccount.set(accountNumber, (paidByAccount.get(accountNumber) ?? 0) + amount);
+      }
+    } else {
+      paidByAccount.set(purchase.accountNumber, (paidByAccount.get(purchase.accountNumber) ?? 0) + purchase.paymentAmount);
+    }
   }
 
   return accounts
@@ -138,9 +160,9 @@ export function createVarianceAllocations(variances: ControlVariance[]): Allocat
     confidence: 0,
     allowableAmount: 0,
     nonAllowableAmount: 0,
-    reviewNote: "Account file shows obligated spending not supported by invoice detail.",
+    reviewNote: "Account file shows obligated spending not supported by uploaded spending detail.",
     candidateLineIds: [],
-    reasons: ["Account obligated amount exceeds invoice payment total for this account."],
+    reasons: ["Account obligated amount exceeds uploaded spending total for this account."],
   }));
 }
 

@@ -21,6 +21,15 @@ const budgetLines: BudgetLine[] = [
     sourceRow: 2,
     columnLabel: "Purchased Services 3000, 4000",
   },
+  {
+    id: "line-salary",
+    functionCode: "125",
+    objectBucket: "Salaries",
+    description: "Summer school teachers",
+    approvedAmount: 4000,
+    sourceRow: 3,
+    columnLabel: "Salaries 1000",
+  },
 ];
 
 function purchase(overrides: Partial<Purchase>): Purchase {
@@ -58,6 +67,25 @@ describe("matching engine", () => {
 
     expect(allocations[0].status).toBe("Review Required");
     expect(allocations[0].matchBasis).toBe("function-object");
+  });
+
+  it("auto-matches staff payroll when a single budget line exists for the function and object bucket", () => {
+    const allocations = createAllocations([
+      purchase({
+        sourceType: "staff",
+        vendorName: "Ramsey, Michele D (102148)",
+        accountNumber: "11-125-1970-001-000-2904",
+        accountDescription: "23G SMMR SCH TCHRS",
+        paymentAmount: 1755,
+        functionCode: "125",
+        objectCode: "1970",
+        objectBucket: "Salaries",
+      }),
+    ], budgetLines);
+
+    expect(allocations[0].status).toBe("Allowable");
+    expect(allocations[0].matchBasis).toBe("specific-budget-line");
+    expect(allocations[0].budgetLineId).toBe("line-salary");
   });
 
   it("marks missing function/object budgets for review", () => {

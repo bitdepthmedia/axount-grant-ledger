@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
 import { exportReconciliationWorkbook, projectTotals } from "./exportWorkbook";
-import { createProject, loadProjectBundle, saveProjectBundle } from "./project";
+import { buildCarryoverSource, createProject, loadProjectBundle, saveProjectBundle } from "./project";
 import { syntheticImports } from "./testFixtures";
 
 describe("project persistence and export", () => {
@@ -44,7 +44,7 @@ describe("project persistence and export", () => {
     expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual([
       "Summary",
       "Budget Lines",
-      "Purchases",
+      "Spending",
       "By Account",
       "By Function",
       "By Object",
@@ -85,5 +85,77 @@ describe("project persistence and export", () => {
     expect(totals.carryover).toBe(100);
     expect(totals.grantToDate).toBeCloseTo(totals.allowable + 100, 2);
     expect(totals.remainingBeforeFlex).toBeCloseTo(totals.approved - totals.allowable - 100, 2);
+  });
+
+  it("rolls prior carryover forward when importing a multi-year carryover project", async () => {
+    const year1 = createProject({
+      grantName: "Synthetic Grant",
+      grantCode: "23g",
+      fiscalYear: "FY25",
+      fiscalYearStart: "2024-07-01",
+      fiscalYearEnd: "2025-06-30",
+      budgetVersionLabel: "Synthetic budget",
+      imports: await syntheticImports(),
+    });
+    const year2 = createProject({
+      grantName: "Synthetic Grant",
+      grantCode: "23g",
+      fiscalYear: "FY26",
+      fiscalYearStart: "2025-07-01",
+      fiscalYearEnd: "2026-06-30",
+      budgetVersionLabel: "Synthetic budget",
+      imports: await syntheticImports(),
+    });
+    const year3 = createProject({
+      grantName: "Synthetic Grant",
+      grantCode: "23g",
+      fiscalYear: "FY27",
+      fiscalYearStart: "2026-07-01",
+      fiscalYearEnd: "2027-06-30",
+      budgetVersionLabel: "Synthetic budget",
+      imports: await syntheticImports(),
+    });
+    const year1Line = year1.budgetVersions[0].lines[0];
+    const year2Line = year2.budgetVersions[0].lines[0];
+    const year3Line = year3.budgetVersions[0].lines[0];
+    const year1Confirmed = {
+      ...year1,
+      allocations: [
+        {
+          id: "year-1-confirmed",
+          budgetLineId: year1Line.id,
+          status: "Allowable" as const,
+          matchBasis: "manual" as const,
+          confidence: 100,
+          allowableAmount: 100,
+          nonAllowableAmount: 0,
+          reviewNote: "",
+          candidateLineIds: [],
+          reasons: [],
+        },
+      ],
+    };
+    const year2WithPrior = {
+      ...year2,
+      allocations: [
+        {
+          id: "year-2-confirmed",
+          budgetLineId: year2Line.id,
+          status: "Allowable" as const,
+          matchBasis: "manual" as const,
+          confidence: 100,
+          allowableAmount: 25,
+          nonAllowableAmount: 0,
+          reviewNote: "",
+          candidateLineIds: [],
+          reasons: [],
+        },
+      ],
+      carryovers: [buildCarryoverSource(year2, year1Confirmed)],
+    };
+
+    const rollForward = buildCarryoverSource(year3, year2WithPrior);
+
+    expect(rollForward.allowableByBudgetLine[year3Line.id]).toBe(125);
   });
 });
