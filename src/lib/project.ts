@@ -36,6 +36,7 @@ export function createProject(input: {
     purchases: input.imports.purchases,
     allocations,
     carryovers: [],
+    functionCodeMappings: {},
     controlVariances,
     auditLog: [audit("Project created", "Imported budget, account, and spending workbooks.")],
   };
@@ -130,7 +131,10 @@ export async function loadProjectBundle(file: File): Promise<Project> {
   if (!json) throw new Error("Project bundle is missing project.json.");
   const project = JSON.parse(json) as Project;
   if (project.schemaVersion !== 1) throw new Error(`Unsupported project schema version ${project.schemaVersion}.`);
-  return project;
+  return {
+    ...project,
+    functionCodeMappings: project.functionCodeMappings ?? {},
+  };
 }
 
 export function downloadBlob(blob: Blob, fileName: string): void {

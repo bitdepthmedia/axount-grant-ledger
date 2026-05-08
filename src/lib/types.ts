@@ -142,6 +142,7 @@ export interface Project {
   purchases: Purchase[];
   allocations: Allocation[];
   carryovers: CarryoverSource[];
+  functionCodeMappings: Record<string, string>;
   controlVariances: ControlVariance[];
   auditLog: AuditEvent[];
 }

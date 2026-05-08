@@ -1,6 +1,7 @@
 import type { AccountSummary, BudgetLine, ObjectBucket } from "./types";
 
 export type BudgetAccountVarianceType = "Missing In Accounts" | "Extra In Accounts";
+export type FunctionCodeMappings = Record<string, string>;
 
 export interface BudgetAccountVariance {
   id: string;
@@ -17,6 +18,7 @@ export interface BudgetAccountVariance {
 export function budgetAccountVariances(
   budgetLines: BudgetLine[],
   accounts: AccountSummary[],
+  functionCodeMappings: FunctionCodeMappings = {},
 ): BudgetAccountVariance[] {
   const approvedByBucket = new Map<string, number>();
   const accountByBucket = new Map<string, number>();
@@ -27,7 +29,7 @@ export function budgetAccountVariances(
   }
 
   for (const account of accounts) {
-    const key = varianceKey(account.functionCode, account.objectBucket);
+    const key = varianceKey(mappedFunctionCode(account.functionCode, functionCodeMappings), account.objectBucket);
     accountByBucket.set(key, (accountByBucket.get(key) ?? 0) + account.ytdBudget);
   }
 
@@ -63,6 +65,26 @@ export function budgetAccountVariances(
     })
     .filter((variance): variance is BudgetAccountVariance => variance !== null)
     .sort((a, b) => Math.abs(b.differenceAmount) - Math.abs(a.differenceAmount));
+}
+
+export function budgetAccountSummary(
+  budgetLines: BudgetLine[],
+  accounts: AccountSummary[],
+  functionCodeMappings: FunctionCodeMappings = {},
+) {
+  const approvedTotal = budgetLines.reduce((total, line) => total + line.approvedAmount, 0);
+  const accountBudgetTotal = accounts.reduce((total, account) => total + account.ytdBudget, 0);
+  const variances = budgetAccountVariances(budgetLines, accounts, functionCodeMappings);
+  return {
+    approvedTotal,
+    accountBudgetTotal,
+    netDifference: accountBudgetTotal - approvedTotal,
+    absoluteMismatchTotal: variances.reduce((total, variance) => total + Math.abs(variance.differenceAmount), 0),
+  };
+}
+
+export function mappedFunctionCode(functionCode: string, functionCodeMappings: FunctionCodeMappings): string {
+  return functionCodeMappings[functionCode] || functionCode;
 }
 
 function varianceKey(functionCode: string, objectBucket: ObjectBucket): string {

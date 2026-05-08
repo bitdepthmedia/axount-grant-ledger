@@ -2,7 +2,7 @@ import ExcelJS from "exceljs";
 import { activeBudgetLines } from "./project";
 import { rollupBudgetLines } from "./matching";
 import { currency } from "./money";
-import { budgetAccountVariances } from "./sourceChecks";
+import { budgetAccountSummary, budgetAccountVariances } from "./sourceChecks";
 import type { Allocation, BudgetLine, Project, Purchase } from "./types";
 
 const HEADERS = {
@@ -200,7 +200,7 @@ function addBudgetAccountGapsSheet(workbook: ExcelJS.Workbook, project: Project)
     "Likely budget line",
     "Note",
   ]);
-  for (const variance of budgetAccountVariances(activeBudgetLines(project), project.accounts)) {
+  for (const variance of budgetAccountVariances(activeBudgetLines(project), project.accounts, project.functionCodeMappings)) {
     const likely = variance.likelyBudgetLines[0];
     sheet.addRow([
       variance.type,
@@ -237,20 +237,16 @@ function addCarryoverSheet(workbook: ExcelJS.Workbook, project: Project) {
 function addChecksSheet(workbook: ExcelJS.Workbook, project: Project) {
   const sheet = workbook.addWorksheet("Source Checks");
   const totals = projectTotals(project);
+  const accountSummary = budgetAccountSummary(activeBudgetLines(project), project.accounts, project.functionCodeMappings);
   sheet.addRows([
     ["Check", "Value"],
     ["Approved budget source total", totals.approved],
-    ["Account YTD budget total", project.accounts.reduce((total, account) => total + account.ytdBudget, 0)],
+    ["Account YTD budget total", accountSummary.accountBudgetTotal],
+    ["Net account budget difference", accountSummary.netDifference],
     ["Account obligated total", project.accounts.reduce((total, account) => total + account.obligated, 0)],
     ["Current spending total", totals.payments],
     ["Account control variance total", totals.variance],
-    [
-      "Budget/account setup gap total",
-      budgetAccountVariances(activeBudgetLines(project), project.accounts).reduce(
-        (total, variance) => total + variance.differenceAmount,
-        0,
-      ),
-    ],
+    ["Function/object setup mismatch total", accountSummary.absoluteMismatchTotal],
   ]);
   styleSheet(sheet, [1]);
   sheet.getColumn(1).width = 34;

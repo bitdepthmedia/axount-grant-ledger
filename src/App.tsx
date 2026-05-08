@@ -17,13 +17,35 @@ import {
   saveProjectBundle,
   updateAllocation,
 } from "./lib/project";
-import { budgetAccountVariances, type BudgetAccountVariance } from "./lib/sourceChecks";
-import type { Allocation, BudgetLine, Project, Purchase, ReviewStatus } from "./lib/types";
+import {
+  budgetAccountSummary,
+  budgetAccountVariances,
+  mappedFunctionCode,
+  type BudgetAccountVariance,
+} from "./lib/sourceChecks";
+import type { AccountSummary, Allocation, BudgetLine, Project, Purchase, ReviewStatus } from "./lib/types";
 
 const tabs = ["Dashboard", "Review Queue", "Spending", "Budget Lines", "Accounts", "Functions", "Objects", "Carryover", "Export"];
 
 type Tab = (typeof tabs)[number];
 const SIDEBAR_COLLAPSED_KEY = "axount-grant-ledger-sidebar-collapsed";
+const REVIEW_STATUSES: ReviewStatus[] = ["Allowable", "Not Allowable", "Partially Allowable", "Review Required"];
+
+interface ReviewFilters {
+  functionCode: string;
+  objectCode: string;
+  status: ReviewStatus | "";
+  keyword: string;
+}
+
+interface BudgetLineFilters {
+  state: string;
+  functionCode: string;
+  object: string;
+  needsReview: "" | "has-review" | "no-review";
+  remaining: "" | "available" | "none" | "over-budget";
+  keyword: string;
+}
 
 function defaultFiscalYear() {
   return {
@@ -58,7 +80,11 @@ export default function App() {
     [budgetLines, project],
   );
   const sourceVariances = useMemo(
-    () => (project ? budgetAccountVariances(budgetLines, project.accounts) : []),
+    () => (project ? budgetAccountVariances(budgetLines, project.accounts, project.functionCodeMappings ?? {}) : []),
+    [budgetLines, project],
+  );
+  const accountSummary = useMemo(
+    () => (project ? budgetAccountSummary(budgetLines, project.accounts, project.functionCodeMappings ?? {}) : null),
     [budgetLines, project],
   );
 
@@ -172,9 +198,48 @@ export default function App() {
     setProject(updateAllocation(project, allocation));
   }
 
+  function applyAllocations(allocations: Allocation[]) {
+    if (!allocations.length) return;
+    setProject((current) => {
+      if (!current) return current;
+      const updates = new Map(allocations.map((allocation) => [allocation.id, allocation]));
+      return {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        allocations: current.allocations.map((allocation) => updates.get(allocation.id) ?? allocation),
+        auditLog: [audit("Bulk review updated", `${allocations.length} review queue items updated.`), ...current.auditLog],
+      };
+    });
+  }
+
+  function applyFunctionCodeMapping(sourceFunctionCode: string, targetFunctionCode: string) {
+    if (!project) return;
+    const currentMappings = project.functionCodeMappings ?? {};
+    const nextMappings = { ...currentMappings };
+    if (!targetFunctionCode || targetFunctionCode === sourceFunctionCode) {
+      delete nextMappings[sourceFunctionCode];
+    } else {
+      nextMappings[sourceFunctionCode] = targetFunctionCode;
+    }
+    setProject({
+      ...project,
+      functionCodeMappings: nextMappings,
+      auditLog: [
+        audit(
+          "Function code remap updated",
+          targetFunctionCode && targetFunctionCode !== sourceFunctionCode
+            ? `${sourceFunctionCode} account budgets compare as ${targetFunctionCode}`
+            : `${sourceFunctionCode} account budget remap cleared`,
+        ),
+        ...project.auditLog,
+      ],
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   function resumeDraft() {
     if (!draft) return;
-    setProject(draft);
+    setProject({ ...draft, functionCodeMappings: draft.functionCodeMappings ?? {} });
     setProjectFileHandle(null);
     setTab("Dashboard");
     setMessage("Autosaved local draft resumed. Use Save Project to choose a .recon file.");
@@ -288,15 +353,22 @@ export default function App() {
                 totals={totals!}
                 rollups={rollups}
                 sourceVariances={sourceVariances}
+                accountSummary={accountSummary!}
                 onOpenTab={setTab}
               />
             )}
             {tab === "Review Queue" && (
-              <ReviewQueue project={project} budgetLines={budgetLines} onChange={applyAllocation} />
+              <ReviewQueue project={project} budgetLines={budgetLines} onChange={applyAllocation} onBulkChange={applyAllocations} />
             )}
             {tab === "Spending" && <Spending project={project} budgetLines={budgetLines} onChange={applyAllocation} />}
             {tab === "Budget Lines" && <BudgetLines rollups={rollups} />}
-            {tab === "Accounts" && <Accounts project={project} sourceVariances={sourceVariances} />}
+            {tab === "Accounts" && (
+              <Accounts
+                project={project}
+                sourceVariances={sourceVariances}
+                onFunctionCodeMappingChange={applyFunctionCodeMapping}
+              />
+            )}
             {tab === "Functions" && <Breakdown project={project} mode="function" />}
             {tab === "Objects" && <Breakdown project={project} mode="object" />}
             {tab === "Carryover" && <Carryover project={project} rollups={rollups} totals={totals!} onImport={importCarryover} />}
@@ -465,18 +537,19 @@ function Dashboard({
   totals,
   rollups,
   sourceVariances,
+  accountSummary,
   onOpenTab,
 }: {
   project: Project;
   totals: ReturnType<typeof projectTotals>;
   rollups: ReturnType<typeof rollupBudgetLines>;
   sourceVariances: BudgetAccountVariance[];
+  accountSummary: ReturnType<typeof budgetAccountSummary>;
   onOpenTab: (tab: Tab) => void;
 }) {
   const overBudget = rollups.filter((row) => row.state === "Over Budget");
   const flexUsed = rollups.filter((row) => row.state === "Flex Used");
-  const accountBudget = project.accounts.reduce((total, account) => total + account.ytdBudget, 0);
-  const budgetGapTotal = sourceVariances.reduce((total, variance) => total + Math.abs(variance.differenceAmount), 0);
+  const hasBudgetDifference = Math.abs(accountSummary.netDifference) > 0.01;
   const reviewItems = project.allocations
     .filter((allocation) => allocation.status === "Review Required" || allocation.matchBasis !== "specific-budget-line")
     .sort((a, b) => priority(b) - priority(a));
@@ -486,17 +559,17 @@ function Dashboard({
       <ScreenHeader title="Dashboard" subtitle={`${project.grantName} / ${project.fiscalYear}`} />
       <div className="kpi-grid">
         <Kpi label="Approved Budget" value={currency(totals.approved)} />
-        <Kpi label="Loaded Account Budget" value={currency(accountBudget)} tone={budgetGapTotal ? "warn" : "good"} />
+        <Kpi label="Loaded Account Budget" value={currency(accountSummary.accountBudgetTotal)} tone={hasBudgetDifference ? "warn" : "good"} />
         <Kpi label="Current Spending" value={currency(totals.payments)} />
         <Kpi label="Confirmed Spending" value={currency(totals.grantToDate)} />
         <Kpi label="Budget Remaining" value={currency(totals.remainingBeforeFlex)} tone={totals.remainingBeforeFlex < 0 ? "bad" : "good"} />
         <Kpi label="Needs Review" value={currency(totals.review)} tone="warn" />
         <Kpi label="Not Allowable" value={currency(totals.notAllowable)} tone="bad" />
-        <Kpi label="Budget/Account Gaps" value={currency(budgetGapTotal)} tone={budgetGapTotal ? "warn" : "good"} />
+        <Kpi label="Net Account Budget Difference" value={signedCurrency(accountSummary.netDifference)} tone={hasBudgetDifference ? "warn" : "good"} />
       </div>
       <p className="plain-note">
         Confirmed Spending includes reviewed current-year invoice and staff spending plus imported prior-year confirmed spending.
-        Items still marked Needs Review are not counted as confirmed.
+        The net account budget difference compares loaded account budgets to the approved budget; function/object setup mismatches are listed in Accounts.
       </p>
       <section className="panel">
         <div className="panel-heading">
@@ -679,10 +752,49 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ReviewQueue({ project, budgetLines, onChange }: ReviewProps) {
-  const rows = project.allocations
-    .filter((allocation) => allocation.status === "Review Required" || allocation.matchBasis !== "specific-budget-line")
-    .sort((a, b) => priority(b) - priority(a));
+function ReviewQueue({ project, budgetLines, onChange, onBulkChange }: ReviewProps & { onBulkChange: (allocations: Allocation[]) => void }) {
+  const [filters, setFilters] = useState<ReviewFilters>({ functionCode: "", objectCode: "", status: "", keyword: "" });
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const allRows = useMemo(
+    () =>
+      project.allocations
+        .filter((allocation) => allocation.status === "Review Required" || allocation.matchBasis !== "specific-budget-line")
+        .sort((a, b) => priority(b) - priority(a)),
+    [project.allocations],
+  );
+  const filterOptions = useMemo(() => reviewFilterOptions(project, budgetLines, allRows), [project, budgetLines, allRows]);
+  const rows = useMemo(() => filterReviewRows(project, budgetLines, allRows, filters), [project, budgetLines, allRows, filters]);
+  const selectedRows = rows.filter((allocation) => selectedIds.has(allocation.id));
+  const allRowsSelected = rows.length > 0 && selectedRows.length === rows.length;
+
+  useEffect(() => {
+    const rowIds = new Set(rows.map((allocation) => allocation.id));
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => rowIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [rows]);
+
+  function toggleSelection(allocationId: string, selected: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (selected) {
+        next.add(allocationId);
+      } else {
+        next.delete(allocationId);
+      }
+      return next;
+    });
+  }
+
+  function toggleAll(selected: boolean) {
+    setSelectedIds(selected ? new Set(rows.map((allocation) => allocation.id)) : new Set());
+  }
+
+  function updateFilter(update: Partial<ReviewFilters>) {
+    setFilters((current) => ({ ...current, ...update }));
+  }
+
   return (
     <AllocationTable
       title="Review Queue"
@@ -690,6 +802,21 @@ function ReviewQueue({ project, budgetLines, onChange }: ReviewProps) {
       project={project}
       budgetLines={budgetLines}
       onChange={onChange}
+      selectable={{
+        allRowsSelected,
+        filterOptions,
+        filters,
+        rowCount: rows.length,
+        selectedIds,
+        selectedRows,
+        totalCount: allRows.length,
+        onBulkChange,
+        onClearFilters: () => setFilters({ functionCode: "", objectCode: "", status: "", keyword: "" }),
+        onClearSelection: () => setSelectedIds(new Set()),
+        onFilterChange: updateFilter,
+        onToggleAll: toggleAll,
+        onToggleRow: toggleSelection,
+      }}
     />
   );
 }
@@ -704,14 +831,68 @@ interface ReviewProps {
   onChange: (allocation: Allocation) => void;
 }
 
-function AllocationTable({ title, rows, project, budgetLines, onChange }: ReviewProps & { title: string; rows: Allocation[] }) {
+interface SelectionProps {
+  allRowsSelected: boolean;
+  filterOptions: ReviewFilterOptions;
+  filters: ReviewFilters;
+  rowCount: number;
+  selectedIds: Set<string>;
+  selectedRows: Allocation[];
+  totalCount: number;
+  onBulkChange: (allocations: Allocation[]) => void;
+  onClearFilters: () => void;
+  onClearSelection: () => void;
+  onFilterChange: (update: Partial<ReviewFilters>) => void;
+  onToggleAll: (selected: boolean) => void;
+  onToggleRow: (allocationId: string, selected: boolean) => void;
+}
+
+function AllocationTable({
+  title,
+  rows,
+  project,
+  budgetLines,
+  onChange,
+  selectable,
+}: ReviewProps & { title: string; rows: Allocation[]; selectable?: SelectionProps }) {
   return (
     <div className="screen">
       <ScreenHeader title={title} subtitle="Open every auto-match, weak match, and variance." />
+      {selectable && (
+        <>
+          <ReviewQueueFilters
+            filters={selectable.filters}
+            options={selectable.filterOptions}
+            rowCount={selectable.rowCount}
+            totalCount={selectable.totalCount}
+            onChange={selectable.onFilterChange}
+            onClear={selectable.onClearFilters}
+          />
+          <ReviewBulkEditor
+            project={project}
+            budgetLines={budgetLines}
+            selectedRows={selectable.selectedRows}
+            onApply={(allocations) => {
+              selectable.onBulkChange(allocations);
+              selectable.onClearSelection();
+            }}
+          />
+        </>
+      )}
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
+              {selectable && (
+                <th className="selection-cell">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all review queue items"
+                    checked={selectable.allRowsSelected}
+                    onChange={(event) => selectable.onToggleAll(event.target.checked)}
+                  />
+                </th>
+              )}
               <th>Status</th>
               <th>Basis</th>
               <th>Spending / Variance</th>
@@ -725,9 +906,19 @@ function AllocationTable({ title, rows, project, budgetLines, onChange }: Review
               const purchase = project.purchases.find((item) => item.id === allocation.purchaseId);
               const variance = project.controlVariances.find((item) => item.id === allocation.accountSummaryId);
               const line = budgetLines.find((item) => item.id === allocation.budgetLineId);
-              const amount = purchase?.paymentAmount ?? variance?.varianceAmount ?? 0;
+              const amount = allocationAmount(project, allocation);
               return (
-                <tr key={allocation.id}>
+                <tr key={allocation.id} className={selectable?.selectedIds.has(allocation.id) ? "selected-row" : undefined}>
+                  {selectable && (
+                    <td className="selection-cell">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${purchase ? spendingName(purchase) : variance?.accountNumber ?? "review item"}`}
+                        checked={selectable.selectedIds.has(allocation.id)}
+                        onChange={(event) => selectable.onToggleRow(allocation.id, event.target.checked)}
+                      />
+                    </td>
+                  )}
                   <td><StatusPill status={allocation.status} /></td>
                   <td>{allocation.matchBasis}</td>
                   <td>
@@ -767,6 +958,130 @@ function AllocationTable({ title, rows, project, budgetLines, onChange }: Review
   );
 }
 
+interface ReviewFilterOptions {
+  functionCodes: string[];
+  objectCodes: string[];
+}
+
+function ReviewQueueFilters({
+  filters,
+  options,
+  rowCount,
+  totalCount,
+  onChange,
+  onClear,
+}: {
+  filters: ReviewFilters;
+  options: ReviewFilterOptions;
+  rowCount: number;
+  totalCount: number;
+  onChange: (update: Partial<ReviewFilters>) => void;
+  onClear: () => void;
+}) {
+  const hasFilters = Boolean(filters.functionCode || filters.objectCode || filters.status || filters.keyword);
+  return (
+    <section className="review-filters">
+      <strong>{hasFilters ? `${rowCount} of ${totalCount}` : `${totalCount} items`}</strong>
+      <select value={filters.functionCode} onChange={(event) => onChange({ functionCode: event.target.value })}>
+        <option value="">All functions</option>
+        {options.functionCodes.map((functionCode) => (
+          <option key={functionCode} value={functionCode}>
+            {functionCode}
+          </option>
+        ))}
+      </select>
+      <select value={filters.objectCode} onChange={(event) => onChange({ objectCode: event.target.value })}>
+        <option value="">All objects</option>
+        {options.objectCodes.map((objectCode) => (
+          <option key={objectCode} value={objectCode}>
+            {objectCode}
+          </option>
+        ))}
+      </select>
+      <select value={filters.status} onChange={(event) => onChange({ status: event.target.value as ReviewStatus | "" })}>
+        <option value="">All decisions</option>
+        {REVIEW_STATUSES.map((status) => (
+          <option key={status} value={status}>
+            {status}
+          </option>
+        ))}
+      </select>
+      <input
+        type="search"
+        placeholder="Keyword"
+        value={filters.keyword}
+        onChange={(event) => onChange({ keyword: event.target.value })}
+      />
+      <button className="small-action" type="button" disabled={!hasFilters} onClick={onClear}>
+        Clear
+      </button>
+    </section>
+  );
+}
+
+function ReviewBulkEditor({
+  project,
+  budgetLines,
+  selectedRows,
+  onApply,
+}: {
+  project: Project;
+  budgetLines: BudgetLine[];
+  selectedRows: Allocation[];
+  onApply: (allocations: Allocation[]) => void;
+}) {
+  const [budgetLineId, setBudgetLineId] = useState("__keep__");
+  const [status, setStatus] = useState<ReviewStatus | "__keep__">("__keep__");
+  const hasBudgetLineChange = budgetLineId !== "__keep__";
+  const hasStatusChange = status !== "__keep__";
+  const canApply = selectedRows.length > 0 && (hasBudgetLineChange || hasStatusChange);
+
+  function applyBulkEdit() {
+    if (!canApply) return;
+    onApply(
+      selectedRows.map((allocation) => {
+        const amount = allocationAmount(project, allocation);
+        let next = allocation;
+        if (hasBudgetLineChange) {
+          next = { ...next, budgetLineId: budgetLineId === "__none__" ? undefined : budgetLineId, matchBasis: "manual" };
+        }
+        if (hasStatusChange) {
+          next = reviewedAllocation(next, amount, status);
+        }
+        return next;
+      }),
+    );
+    setBudgetLineId("__keep__");
+    setStatus("__keep__");
+  }
+
+  return (
+    <section className="bulk-editor">
+      <strong>{selectedRows.length} selected</strong>
+      <select value={budgetLineId} onChange={(event) => setBudgetLineId(event.target.value)}>
+        <option value="__keep__">Keep budget line</option>
+        <option value="__none__">No budget line</option>
+        {budgetLines.map((budgetLine) => (
+          <option key={budgetLine.id} value={budgetLine.id}>
+            {budgetLine.functionCode} / {budgetLine.objectBucket} / {budgetLine.description.slice(0, 70)}
+          </option>
+        ))}
+      </select>
+      <select value={status} onChange={(event) => setStatus(event.target.value as ReviewStatus | "__keep__")}>
+        <option value="__keep__">Keep decision</option>
+        {REVIEW_STATUSES.map((reviewStatus) => (
+          <option key={reviewStatus} value={reviewStatus}>
+            {reviewStatus}
+          </option>
+        ))}
+      </select>
+      <button className="small-action" type="button" disabled={!canApply} onClick={applyBulkEdit}>
+        Apply
+      </button>
+    </section>
+  );
+}
+
 function ReviewEditor({
   allocation,
   amount,
@@ -777,11 +1092,7 @@ function ReviewEditor({
   onChange: (allocation: Allocation) => void;
 }) {
   function setStatus(status: ReviewStatus) {
-    const allowableAmount =
-      status === "Allowable" ? amount : status === "Partially Allowable" ? allocation.allowableAmount : 0;
-    const nonAllowableAmount =
-      status === "Not Allowable" ? amount : status === "Partially Allowable" ? Math.max(0, amount - allowableAmount) : 0;
-    onChange({ ...allocation, status, allowableAmount, nonAllowableAmount, matchBasis: "manual" });
+    onChange(reviewedAllocation(allocation, amount, status));
   }
 
   return (
@@ -819,10 +1130,98 @@ function ReviewEditor({
   );
 }
 
+function allocationAmount(project: Project, allocation: Allocation) {
+  const purchase = project.purchases.find((item) => item.id === allocation.purchaseId);
+  const variance = project.controlVariances.find((item) => item.id === allocation.accountSummaryId);
+  return purchase?.paymentAmount ?? variance?.varianceAmount ?? 0;
+}
+
+function reviewFilterOptions(project: Project, budgetLines: BudgetLine[], rows: Allocation[]): ReviewFilterOptions {
+  const functionCodes = new Set<string>();
+  const objectCodes = new Set<string>();
+  for (const allocation of rows) {
+    const context = allocationReviewContext(project, budgetLines, allocation);
+    if (context.functionCode) functionCodes.add(context.functionCode);
+    if (context.objectCode) objectCodes.add(context.objectCode);
+  }
+  return {
+    functionCodes: uniqueSorted([...functionCodes]),
+    objectCodes: uniqueSorted([...objectCodes]),
+  };
+}
+
+function filterReviewRows(project: Project, budgetLines: BudgetLine[], rows: Allocation[], filters: ReviewFilters): Allocation[] {
+  const keyword = filters.keyword.trim().toLowerCase();
+  return rows.filter((allocation) => {
+    const context = allocationReviewContext(project, budgetLines, allocation);
+    if (filters.functionCode && context.functionCode !== filters.functionCode) return false;
+    if (filters.objectCode && context.objectCode !== filters.objectCode) return false;
+    if (filters.status && allocation.status !== filters.status) return false;
+    return !keyword || context.keywordText.includes(keyword);
+  });
+}
+
+function allocationReviewContext(project: Project, budgetLines: BudgetLine[], allocation: Allocation) {
+  const purchase = project.purchases.find((item) => item.id === allocation.purchaseId);
+  const variance = project.controlVariances.find((item) => item.id === allocation.accountSummaryId);
+  const line = budgetLines.find((item) => item.id === allocation.budgetLineId);
+  const functionCode = purchase?.functionCode ?? variance?.functionCode ?? line?.functionCode ?? "";
+  const objectCode = purchase?.objectCode ?? variance?.objectCode ?? "";
+  const keywordText = [
+    purchase ? spendingName(purchase) : "",
+    purchase?.accountNumber,
+    purchase ? spendingReference(purchase) : "",
+    purchase?.accountDescription,
+    variance?.accountNumber,
+    variance?.accountDescription,
+    line?.description,
+    allocation.status,
+    allocation.matchBasis,
+    allocation.reviewNote,
+    ...allocation.reasons,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return { functionCode, objectCode, keywordText };
+}
+
+function reviewedAllocation(allocation: Allocation, amount: number, status: ReviewStatus): Allocation {
+  const allowableAmount = status === "Allowable" ? amount : status === "Partially Allowable" ? allocation.allowableAmount : 0;
+  const nonAllowableAmount =
+    status === "Not Allowable" ? amount : status === "Partially Allowable" ? Math.max(0, amount - allowableAmount) : 0;
+  return { ...allocation, status, allowableAmount, nonAllowableAmount, matchBasis: "manual" };
+}
+
 function BudgetLines({ rollups }: { rollups: ReturnType<typeof rollupBudgetLines> }) {
+  const [filters, setFilters] = useState<BudgetLineFilters>({
+    state: "",
+    functionCode: "",
+    object: "",
+    needsReview: "",
+    remaining: "",
+    keyword: "",
+  });
+  const filterOptions = useMemo(() => budgetLineFilterOptions(rollups), [rollups]);
+  const filteredRollups = useMemo(() => filterBudgetLineRows(rollups, filters), [rollups, filters]);
+
+  function updateFilter(update: Partial<BudgetLineFilters>) {
+    setFilters((current) => ({ ...current, ...update }));
+  }
+
   return (
     <div className="screen">
       <ScreenHeader title="Budget Lines" subtitle="Compare each approved budget line to confirmed spending and items still needing review." />
+      <BudgetLineFiltersToolbar
+        filters={filters}
+        options={filterOptions}
+        rowCount={filteredRollups.length}
+        totalCount={rollups.length}
+        onChange={updateFilter}
+        onClear={() =>
+          setFilters({ state: "", functionCode: "", object: "", needsReview: "", remaining: "", keyword: "" })
+        }
+      />
       <div className="table-wrap">
         <table>
           <thead>
@@ -838,7 +1237,7 @@ function BudgetLines({ rollups }: { rollups: ReturnType<typeof rollupBudgetLines
             </tr>
           </thead>
           <tbody>
-            {rollups.map((row) => (
+            {filteredRollups.map((row) => (
               <tr key={row.line.id}>
                 <td><StatusPill status={simpleBudgetState(row.state)} /></td>
                 <td>{row.line.functionCode}</td>
@@ -850,6 +1249,11 @@ function BudgetLines({ rollups }: { rollups: ReturnType<typeof rollupBudgetLines
                 <td>{currency(row.remainingBeforeFlex)}</td>
               </tr>
             ))}
+            {!filteredRollups.length && (
+              <tr>
+                <td colSpan={8}>No budget lines match these filters.</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -893,14 +1297,186 @@ function BudgetLines({ rollups }: { rollups: ReturnType<typeof rollupBudgetLines
   );
 }
 
-function Accounts({ project, sourceVariances }: { project: Project; sourceVariances: BudgetAccountVariance[] }) {
+interface BudgetLineFilterOptions {
+  states: string[];
+  functionCodes: string[];
+  objects: string[];
+}
+
+function BudgetLineFiltersToolbar({
+  filters,
+  options,
+  rowCount,
+  totalCount,
+  onChange,
+  onClear,
+}: {
+  filters: BudgetLineFilters;
+  options: BudgetLineFilterOptions;
+  rowCount: number;
+  totalCount: number;
+  onChange: (update: Partial<BudgetLineFilters>) => void;
+  onClear: () => void;
+}) {
+  const hasFilters = Boolean(
+    filters.state || filters.functionCode || filters.object || filters.needsReview || filters.remaining || filters.keyword,
+  );
+  return (
+    <section className="budget-line-filters">
+      <strong>{hasFilters ? `${rowCount} of ${totalCount}` : `${totalCount} lines`}</strong>
+      <select value={filters.state} onChange={(event) => onChange({ state: event.target.value })}>
+        <option value="">All states</option>
+        {options.states.map((state) => (
+          <option key={state} value={state}>
+            {simpleBudgetState(state)}
+          </option>
+        ))}
+      </select>
+      <select value={filters.functionCode} onChange={(event) => onChange({ functionCode: event.target.value })}>
+        <option value="">All functions</option>
+        {options.functionCodes.map((functionCode) => (
+          <option key={functionCode} value={functionCode}>
+            {functionCode}
+          </option>
+        ))}
+      </select>
+      <select value={filters.object} onChange={(event) => onChange({ object: event.target.value })}>
+        <option value="">All objects</option>
+        {options.objects.map((object) => (
+          <option key={object} value={object}>
+            {object}
+          </option>
+        ))}
+      </select>
+      <select value={filters.needsReview} onChange={(event) => onChange({ needsReview: event.target.value as BudgetLineFilters["needsReview"] })}>
+        <option value="">Any review amount</option>
+        <option value="has-review">Has review</option>
+        <option value="no-review">No review</option>
+      </select>
+      <select value={filters.remaining} onChange={(event) => onChange({ remaining: event.target.value as BudgetLineFilters["remaining"] })}>
+        <option value="">Any remaining</option>
+        <option value="available">Remaining available</option>
+        <option value="none">No remaining</option>
+        <option value="over-budget">Over budget</option>
+      </select>
+      <input
+        type="search"
+        placeholder="Keyword"
+        value={filters.keyword}
+        onChange={(event) => onChange({ keyword: event.target.value })}
+      />
+      <button className="small-action" type="button" disabled={!hasFilters} onClick={onClear}>
+        Clear
+      </button>
+    </section>
+  );
+}
+
+function budgetLineFilterOptions(rollups: ReturnType<typeof rollupBudgetLines>): BudgetLineFilterOptions {
+  return {
+    states: uniqueSorted([...new Set(rollups.map((row) => row.state))]),
+    functionCodes: uniqueSorted([...new Set(rollups.map((row) => row.line.functionCode))]),
+    objects: uniqueSorted([...new Set(rollups.map((row) => row.line.objectBucket))]),
+  };
+}
+
+function filterBudgetLineRows(rollups: ReturnType<typeof rollupBudgetLines>, filters: BudgetLineFilters) {
+  const keyword = filters.keyword.trim().toLowerCase();
+  return rollups.filter((row) => {
+    if (filters.state && row.state !== filters.state) return false;
+    if (filters.functionCode && row.line.functionCode !== filters.functionCode) return false;
+    if (filters.object && row.line.objectBucket !== filters.object) return false;
+    if (filters.needsReview === "has-review" && row.currentReview <= 0.01) return false;
+    if (filters.needsReview === "no-review" && row.currentReview > 0.01) return false;
+    if (filters.remaining === "available" && row.remainingBeforeFlex <= 0.01) return false;
+    if (filters.remaining === "none" && Math.abs(row.remainingBeforeFlex) > 0.01) return false;
+    if (filters.remaining === "over-budget" && row.remainingBeforeFlex >= -0.01) return false;
+    return !keyword || budgetLineKeywordText(row).includes(keyword);
+  });
+}
+
+function budgetLineKeywordText(row: ReturnType<typeof rollupBudgetLines>[number]) {
+  return [
+    row.state,
+    simpleBudgetState(row.state),
+    row.line.functionCode,
+    row.line.objectBucket,
+    row.line.description,
+    row.line.entity,
+    row.line.columnLabel,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function Accounts({
+  project,
+  sourceVariances,
+  onFunctionCodeMappingChange,
+}: {
+  project: Project;
+  sourceVariances: BudgetAccountVariance[];
+  onFunctionCodeMappingChange: (sourceFunctionCode: string, targetFunctionCode: string) => void;
+}) {
+  const functionCodeMappings = project.functionCodeMappings ?? {};
+  const budgetFunctionCodes = uniqueSorted(activeBudgetLines(project).map((line) => line.functionCode));
+  const accountFunctionRows = accountFunctionSummaries(project.accounts, functionCodeMappings);
+  const accountSummary = budgetAccountSummary(activeBudgetLines(project), project.accounts, functionCodeMappings);
   return (
     <div className="screen">
       <ScreenHeader title="Accounts" subtitle="Obligated amount is YTD Actual + YTD Encum + Req Reserve." />
       <section className="panel">
         <div className="panel-heading">
+          <h3>Function Code Remapping</h3>
+          <span className="muted">Use when account files use a different function code than the approved budget.</span>
+        </div>
+        <div className="carryover-metrics">
+          <Metric label="Approved budget" value={currency(accountSummary.approvedTotal)} />
+          <Metric label="Loaded account budget" value={currency(accountSummary.accountBudgetTotal)} />
+          <Metric label="Net difference" value={signedCurrency(accountSummary.netDifference)} />
+          <Metric label="Setup mismatches" value={currency(accountSummary.absoluteMismatchTotal)} />
+          <Metric label="Active remaps" value={String(Object.keys(functionCodeMappings).length)} />
+        </div>
+        <div className="table-wrap embedded remap-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Account FC</th>
+                <th>Account Budget</th>
+                <th>Compare As</th>
+                <th>Accounts</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accountFunctionRows.map((row) => (
+                <tr key={row.functionCode}>
+                  <td>{row.functionCode}</td>
+                  <td>{currency(row.accountBudget)}</td>
+                  <td>
+                    <select
+                      value={functionCodeMappings[row.functionCode] ?? ""}
+                      onChange={(event) => onFunctionCodeMappingChange(row.functionCode, event.target.value)}
+                    >
+                      <option value="">Use {row.functionCode}</option>
+                      {budgetFunctionCodes.map((functionCode) => (
+                        <option key={functionCode} value={functionCode}>
+                          {functionCode}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>{row.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-heading">
           <h3>Budget vs Accounts Gaps</h3>
-          <span className="muted">Approved budget compared to loaded account budgets by function and object.</span>
+          <span className="muted">Approved budget compared to loaded account budgets by mapped function and object.</span>
         </div>
         <div className="table-wrap embedded">
           <table>
@@ -955,6 +1531,7 @@ function Accounts({ project, sourceVariances }: { project: Project; sourceVarian
             <tr>
               <th>Account</th>
               <th>Description</th>
+              <th>Compare FC</th>
               <th>Budget</th>
               <th>Actual</th>
               <th>Encum</th>
@@ -968,6 +1545,7 @@ function Accounts({ project, sourceVariances }: { project: Project; sourceVarian
               <tr key={account.id}>
                 <td>{account.accountNumber}</td>
                 <td>{account.description}</td>
+                <td>{mappedFunctionCode(account.functionCode, functionCodeMappings)}</td>
                 <td>{currency(account.ytdBudget)}</td>
                 <td>{currency(account.ytdActual)}</td>
                 <td>{currency(account.ytdEncum)}</td>
@@ -1181,6 +1759,11 @@ function Kpi({ label, value, tone = "neutral" }: { label: string; value: string;
   );
 }
 
+function signedCurrency(value: number): string {
+  if (Math.abs(value) < 0.01) return currency(0);
+  return `${value > 0 ? "+" : "-"}${currency(Math.abs(value))}`;
+}
+
 function StatusPill({ status }: { status: string }) {
   const className = status.toLowerCase().replace(/[^a-z]+/g, "-").replace(/^-|-$/g, "");
   return <span className={`pill ${className}`}>{status}</span>;
@@ -1197,6 +1780,27 @@ function priority(allocation: Allocation): number {
   if (allocation.matchBasis === "function-object") return 3;
   if (allocation.status === "Review Required") return 2;
   return 1;
+}
+
+function accountFunctionSummaries(accounts: AccountSummary[], functionCodeMappings: Record<string, string>) {
+  const rows = new Map<string, { functionCode: string; mappedFunctionCode: string; accountBudget: number; count: number }>();
+  for (const account of accounts) {
+    const row = rows.get(account.functionCode) ?? {
+      functionCode: account.functionCode,
+      mappedFunctionCode: mappedFunctionCode(account.functionCode, functionCodeMappings),
+      accountBudget: 0,
+      count: 0,
+    };
+    row.mappedFunctionCode = mappedFunctionCode(account.functionCode, functionCodeMappings);
+    row.accountBudget += account.ytdBudget;
+    row.count += 1;
+    rows.set(account.functionCode, row);
+  }
+  return [...rows.values()].sort((a, b) => a.functionCode.localeCompare(b.functionCode, undefined, { numeric: true }));
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
 function formatDateTime(value: string): string {

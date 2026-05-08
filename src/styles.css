@@ -674,6 +674,55 @@ textarea {
   border-radius: 6px;
 }
 
+.remap-table {
+  margin-top: 14px;
+}
+
+.remap-table select {
+  min-width: 150px;
+}
+
+.budget-line-filters,
+.review-filters,
+.bulk-editor {
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d9e0ea;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.budget-line-filters {
+  grid-template-columns:
+    auto minmax(130px, 170px) minmax(130px, 170px) minmax(130px, 170px) minmax(150px, 190px)
+    minmax(150px, 190px) minmax(190px, 1fr) auto;
+}
+
+.review-filters {
+  grid-template-columns: auto minmax(130px, 180px) minmax(130px, 180px) minmax(160px, 220px) minmax(190px, 1fr) auto;
+}
+
+.bulk-editor {
+  grid-template-columns: auto minmax(220px, 1fr) minmax(170px, 240px) auto;
+}
+
+.budget-line-filters strong,
+.review-filters strong,
+.bulk-editor strong {
+  color: #243044;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.budget-line-filters .small-action:disabled,
+.review-filters .small-action:disabled,
+.bulk-editor .small-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -696,6 +745,21 @@ th {
   color: #243044;
   font-size: 12px;
   text-transform: uppercase;
+}
+
+.selection-cell {
+  width: 44px;
+  min-width: 44px;
+  text-align: center;
+}
+
+.selection-cell input {
+  width: 16px;
+  height: 16px;
+}
+
+.selected-row {
+  background: #f3f8fb;
 }
 
 .block {
@@ -781,7 +845,10 @@ th {
   .form-grid,
   .attention-actions,
   .carryover-metrics,
-  .compact-row {
+  .compact-row,
+  .budget-line-filters,
+  .review-filters,
+  .bulk-editor {
     grid-template-columns: 1fr;
   }
 
