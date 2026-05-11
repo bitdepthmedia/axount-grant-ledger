@@ -7,6 +7,7 @@ import {
   parseBudgetWorkbook,
   parseInvoiceBuffer,
   parseInvoiceWorkbook,
+  parseBudgetBuffer,
   parseStaffBuffer,
   parseStaffWorkbook,
 } from "./parser";
@@ -21,6 +22,27 @@ describe("source workbook parsers", () => {
       4786,
       2,
     );
+  });
+
+  it("parses approved budget lines from the custom budget upload CSV template", async () => {
+    const csv = [
+      "Func. Code,Description,FTE,Hours,Entity,Salaries - 1000,Benefits - 2000,Purchased Services - 3000/4000,Supplies & Materials -5000,Capital Outlay -6000,Other Expenses - 7000/8000,Total,Notes",
+      "111,Literacy supplies,0,0,Synthetic District,0,0,0,1500,0,0,1500,",
+      "125,Family literacy consultant,0,0,Synthetic District,0,0,5308,0,0,0,5308,",
+      "225,Instructional coach,1,0,Synthetic District,2000,700,0,0,0,0,2700,",
+    ].join("\n");
+
+    const budget = await parseBudgetBuffer(textBuffer(csv), "custom-budget-upload-template.csv", "Template budget");
+
+    expect(budget.lines).toHaveLength(4);
+    expect(sum(budget.lines.map((line) => line.approvedAmount))).toBeCloseTo(9508, 2);
+    expect(budget.lines.map((line) => line.objectBucket)).toEqual([
+      "Supplies",
+      "Purchased Services",
+      "Salaries",
+      "Benefits",
+    ]);
+    expect(budget.lines[0].entity).toBe("Synthetic District");
   });
 
   it("parses account obligated spending and excludes count rows", () => {
@@ -146,6 +168,11 @@ async function simpleXlsx(rows: (string | number)[][]): Promise<ArrayBuffer> {
   zip.file("xl/sharedStrings.xml", `<?xml version="1.0" encoding="utf-8"?><x:sst xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sharedStrings.length}" uniqueCount="${sharedStrings.length}">${sharedStrings.map((value) => `<x:si><x:t>${escapeXml(value)}</x:t></x:si>`).join("")}</x:sst>`);
   zip.file("xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="utf-8"?><x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><x:sheetData>${sheetRows}</x:sheetData></x:worksheet>`);
   return zip.generateAsync({ type: "arraybuffer" });
+}
+
+function textBuffer(value: string): ArrayBuffer {
+  const buffer = new TextEncoder().encode(value).buffer;
+  return buffer.slice(0);
 }
 
 function columnName(column: number): string {

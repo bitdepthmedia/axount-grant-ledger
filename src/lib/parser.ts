@@ -15,6 +15,15 @@ const BUDGET_AMOUNT_COLUMNS = [
   "Other Expenses 7000, 8000",
 ];
 
+const BUDGET_AMOUNT_HEADER_ALIASES: Record<string, string[]> = {
+  "Salaries 1000": ["Salaries 1000", "Salaries - 1000"],
+  "Benefits 2000": ["Benefits 2000", "Benefits - 2000"],
+  "Purchased Services 3000, 4000": ["Purchased Services 3000, 4000", "Purchased Services - 3000/4000"],
+  "Supplies 5000": ["Supplies 5000", "Supplies & Materials -5000", "Supplies & Materials 5000"],
+  "Capital Outlay 6000": ["Capital Outlay 6000", "Capital Outlay -6000"],
+  "Other Expenses 7000, 8000": ["Other Expenses 7000, 8000", "Other Expenses - 7000/8000"],
+};
+
 interface StaffGroup {
   firstRowNumber: number;
   employeeId: string;
@@ -39,6 +48,9 @@ export async function workbookFromBuffer(buffer: ArrayBuffer): Promise<ExcelJS.W
 }
 
 export async function parseBudgetBuffer(buffer: ArrayBuffer, sourceFileName: string, label: string): Promise<BudgetVersion> {
+  if (sourceFileName.toLowerCase().endsWith(".csv")) {
+    return parseBudgetRows(csvToRows(new TextDecoder().decode(buffer)), sourceFileName, label);
+  }
   try {
     return parseBudgetWorkbook(await workbookFromBuffer(buffer), sourceFileName, label);
   } catch {
@@ -126,17 +138,20 @@ export function parseBudgetWorkbook(workbook: ExcelJS.Workbook, sourceFileName: 
 
 function parseBudgetRows(rows: string[][], sourceFileName: string, label: string, providedHeader?: string[]): BudgetVersion {
   const header = providedHeader ?? rows[0] ?? [];
+  const functionIndex = findHeaderIndex(header, ["Function Code", "Func. Code"]);
+  const descriptionIndex = findHeaderIndex(header, ["Description"]);
+  const entityIndex = findHeaderIndex(header, ["Entity"]);
   const amountIndexes = BUDGET_AMOUNT_COLUMNS.map((columnLabel) => ({
     columnLabel,
-    index: header.findIndex((value) => normalizeHeader(value) === normalizeHeader(columnLabel)),
+    index: findHeaderIndex(header, BUDGET_AMOUNT_HEADER_ALIASES[columnLabel] ?? [columnLabel]),
   })).filter((column) => column.index > 0);
 
   const lines: BudgetLine[] = [];
   rows.forEach((row, rowIndex) => {
     if (rowIndex === 0) return;
     const rowNumber = rowIndex + 1;
-    const functionCode = String(row[0] ?? "").trim();
-    const description = String(row[1] ?? "").trim();
+    const functionCode = textAt(row, functionIndex >= 0 ? functionIndex : 0);
+    const description = textAt(row, descriptionIndex >= 0 ? descriptionIndex : 1);
     if (!functionCode || !description || description.toLowerCase() === "sub-total") return;
     if (functionCode.includes("-")) return;
 
@@ -148,7 +163,7 @@ function parseBudgetRows(rows: string[][], sourceFileName: string, label: string
         functionCode,
         objectBucket: objectBucketFromBudgetColumn(amountColumn.columnLabel),
         description,
-        entity: String(row[2] ?? "").trim(),
+        entity: textAt(row, entityIndex >= 0 ? entityIndex : 2),
         approvedAmount,
         sourceRow: rowNumber,
         columnLabel: amountColumn.columnLabel,
@@ -346,6 +361,11 @@ function headerMapValues(row: string[]): Record<string, number> {
   return map;
 }
 
+function findHeaderIndex(header: string[], labels: string[]): number {
+  const normalizedLabels = new Set(labels.map(normalizeHeader));
+  return header.findIndex((value) => normalizedLabels.has(normalizeHeader(value)));
+}
+
 function rowValues(row: ExcelJS.Row): string[] {
   const values: string[] = [];
   row.eachCell((cell) => values.push(cellText(cell)));
@@ -472,4 +492,43 @@ function columnIndex(reference: string): number {
   let index = 0;
   for (const letter of letters) index = index * 26 + letter.charCodeAt(0) - 64;
   return index - 1;
+}
+
+function csvToRows(csv: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+
+  for (let index = 0; index < csv.length; index += 1) {
+    const char = csv[index];
+    const next = csv[index + 1];
+    if (char === "\"") {
+      if (quoted && next === "\"") {
+        field += "\"";
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+    if (char === "," && !quoted) {
+      row.push(field.trim());
+      field = "";
+      continue;
+    }
+    if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") index += 1;
+      row.push(field.trim());
+      if (row.some((value) => value)) rows.push(row);
+      row = [];
+      field = "";
+      continue;
+    }
+    field += char;
+  }
+
+  row.push(field.trim());
+  if (row.some((value) => value)) rows.push(row);
+  return rows;
 }

@@ -479,7 +479,13 @@ function ImportScreen({
           </label>
         </div>
         <div className="file-grid">
-          <FileInput label="Approved budget" file={files.budget} onFile={(budget) => setFiles({ ...files, budget })} />
+          <FileInput
+            label="Approved budget"
+            file={files.budget}
+            accept=".xlsx,.csv"
+            placeholder="Choose .xlsx or .csv file"
+            onFile={(budget) => setFiles({ ...files, budget })}
+          />
           <FileInput label="Account summary" file={files.accounts} onFile={(accounts) => setFiles({ ...files, accounts })} />
           <FileInput label="Invoice detail (optional)" file={files.invoices} onFile={(invoices) => setFiles({ ...files, invoices })} />
           <FileInput label="Staff payroll (optional)" file={files.staff} onFile={(staff) => setFiles({ ...files, staff })} />
@@ -508,12 +514,24 @@ function SaveNotice({ draftStatus, projectFileName, onSave }: { draftStatus: str
   );
 }
 
-function FileInput({ label, file, onFile }: { label: string; file?: File; onFile: (file?: File) => void }) {
+function FileInput({
+  label,
+  file,
+  onFile,
+  accept = ".xlsx",
+  placeholder = "Choose .xlsx file",
+}: {
+  label: string;
+  file?: File;
+  onFile: (file?: File) => void;
+  accept?: string;
+  placeholder?: string;
+}) {
   return (
     <label className="file-drop">
       <span>{label}</span>
-      <strong>{file?.name ?? "Choose .xlsx file"}</strong>
-      <input type="file" accept=".xlsx" onChange={(event) => onFile(event.target.files?.[0])} />
+      <strong>{file?.name ?? placeholder}</strong>
+      <input type="file" accept={accept} onChange={(event) => onFile(event.target.files?.[0])} />
     </label>
   );
 }
