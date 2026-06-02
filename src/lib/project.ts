@@ -13,12 +13,13 @@ export function createProject(input: {
   fiscalYearEnd: string;
   budgetVersionLabel: string;
   imports: WorkbookImportResult;
+  priorProject?: Project;
 }): Project {
   const now = new Date().toISOString();
   const baseAllocations = createAllocations(input.imports.purchases, input.imports.budgetVersion.lines);
   const controlVariances = createControlVariances(input.imports.accounts, input.imports.purchases);
   const allocations = [...baseAllocations, ...createVarianceAllocations(controlVariances)];
-  return {
+  const project: Project = {
     schemaVersion: 1,
     id: makeId("project"),
     grantName: input.grantName,
@@ -39,6 +40,14 @@ export function createProject(input: {
     functionCodeMappings: {},
     controlVariances,
     auditLog: [audit("Project created", "Imported budget, account, and spending workbooks.")],
+  };
+  if (!input.priorProject) return project;
+
+  const carryover = buildCarryoverSource(project, input.priorProject);
+  return {
+    ...project,
+    carryovers: [carryover],
+    auditLog: [audit("Carryover imported", `${input.priorProject.grantName} ${input.priorProject.fiscalYear}`), ...project.auditLog],
   };
 }
 

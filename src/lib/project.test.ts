@@ -158,4 +158,49 @@ describe("project persistence and export", () => {
 
     expect(rollForward.allowableByBudgetLine[year3Line.id]).toBe(125);
   });
+
+  it("applies prior project carryover while creating a new project", async () => {
+    const prior = createProject({
+      grantName: "Synthetic Grant",
+      grantCode: "23g",
+      fiscalYear: "FY25",
+      fiscalYearStart: "2024-07-01",
+      fiscalYearEnd: "2025-06-30",
+      budgetVersionLabel: "Synthetic budget",
+      imports: await syntheticImports(),
+    });
+    const priorLine = prior.budgetVersions[0].lines[0];
+    const priorConfirmed = {
+      ...prior,
+      allocations: [
+        {
+          id: "prior-confirmed",
+          budgetLineId: priorLine.id,
+          status: "Allowable" as const,
+          matchBasis: "manual" as const,
+          confidence: 100,
+          allowableAmount: 100,
+          nonAllowableAmount: 0,
+          reviewNote: "",
+          candidateLineIds: [],
+          reasons: [],
+        },
+      ],
+    };
+
+    const current = createProject({
+      grantName: "Synthetic Grant",
+      grantCode: "23g",
+      fiscalYear: "FY26",
+      fiscalYearStart: "2025-07-01",
+      fiscalYearEnd: "2026-06-30",
+      budgetVersionLabel: "Synthetic budget",
+      imports: await syntheticImports(),
+      priorProject: priorConfirmed,
+    });
+
+    expect(current.carryovers).toHaveLength(1);
+    expect(current.carryovers[0].allowableByBudgetLine[current.budgetVersions[0].lines[0].id]).toBe(100);
+    expect(current.auditLog[0].action).toBe("Carryover imported");
+  });
 });

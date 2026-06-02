@@ -1,7 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axountLogo from "../img/axount_logo-bw-400w.png";
+import {
+  createDesktopFileBridge,
+  listenNativeProjectOpen,
+  openNativeProjectFile,
+  openNativeProjectPath,
+  takePendingNativeProjectPaths,
+} from "./lib/desktopFiles";
+import { objectBucketFromCode } from "./lib/codes";
 import { clearLatestDraft, draftSummary, loadLatestDraft, saveLatestDraft, type DraftSummary } from "./lib/draftStore";
-import { saveProjectFile, type ProjectFileHandle, type ProjectSavePicker } from "./lib/fileSave";
+import { saveExportFile, saveProjectFile, type ProjectSavePicker, type SavedProjectFileHandle } from "./lib/fileSave";
 import { exportFileName, exportReconciliationWorkbook, projectTotals } from "./lib/exportWorkbook";
 import { rollupBudgetLines } from "./lib/matching";
 import { currency } from "./lib/money";
@@ -62,7 +70,8 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [draft, setDraft] = useState<Project | null>(null);
   const [draftStatus, setDraftStatus] = useState("No local draft loaded.");
-  const [projectFileHandle, setProjectFileHandle] = useState<ProjectFileHandle | null>(null);
+  const [projectFileHandle, setProjectFileHandle] = useState<SavedProjectFileHandle | null>(null);
+  const desktopFiles = useMemo(() => createDesktopFileBridge(), []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
   const autosaveTimer = useRef<number | null>(null);
   const [setup, setSetup] = useState({
@@ -71,7 +80,7 @@ export default function App() {
     budgetVersionLabel: "Original budget",
     ...defaultFiscalYear(),
   });
-  const [files, setFiles] = useState<{ budget?: File; accounts?: File; invoices?: File; staff?: File }>({});
+  const [files, setFiles] = useState<{ budget?: File; accounts?: File; invoices?: File; staff?: File; priorProject?: File }>({});
 
   const budgetLines = useMemo(() => (project ? activeBudgetLines(project) : []), [project]);
   const totals = useMemo(() => (project ? projectTotals(project) : null), [project]);
@@ -123,20 +132,27 @@ export default function App() {
       return;
     }
     setBusy(true);
-    setMessage("Importing workbooks...");
+    setMessage(files.priorProject ? "Importing workbooks and prior project..." : "Importing workbooks...");
     try {
-      const imports = await parseAllWorkbooks({
-        budgetFile: files.budget,
-        accountsFile: files.accounts,
-        invoicesFile: files.invoices,
-        staffFile: files.staff,
-        budgetVersionLabel: setup.budgetVersionLabel,
-      });
-      const created = createProject({ ...setup, imports });
+      const [imports, priorProject] = await Promise.all([
+        parseAllWorkbooks({
+          budgetFile: files.budget,
+          accountsFile: files.accounts,
+          invoicesFile: files.invoices,
+          staffFile: files.staff,
+          budgetVersionLabel: setup.budgetVersionLabel,
+        }),
+        files.priorProject ? loadProjectBundle(files.priorProject) : Promise.resolve(undefined),
+      ]);
+      const created = createProject({ ...setup, imports, priorProject });
       setProject(created);
       setProjectFileHandle(null);
       setTab("Dashboard");
-      setMessage("Project imported and autosaved locally. Use Save Project to choose a .recon file.");
+      setMessage(
+        priorProject
+          ? "Project imported with prior-year carryover and autosaved locally. Use Save Project to choose a .recon file."
+          : "Project imported and autosaved locally. Use Save Project to choose a .recon file.",
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Import failed.");
     } finally {
@@ -144,15 +160,81 @@ export default function App() {
     }
   }
 
-  async function openProject(file?: File) {
+  const openProject = useCallback(async (file?: File, handle?: SavedProjectFileHandle) => {
     if (!file) return;
     setBusy(true);
     try {
       const loaded = await loadProjectBundle(file);
       setProject(loaded);
-      setProjectFileHandle(null);
+      setProjectFileHandle(handle ?? null);
       setTab("Dashboard");
-      setMessage("Project reopened and autosaved locally. Use Save Project to choose where this file should be overwritten.");
+      setMessage(
+        handle
+          ? `Project reopened from ${handle.name}. Save Project overwrites this file.`
+          : "Project reopened and autosaved locally. Use Save Project to choose where this file should be overwritten.",
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Project open failed.");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const openNativeProjectFromPath = useCallback(
+    async (path: string) => {
+      setBusy(true);
+      try {
+        const opened = await openNativeProjectPath(path);
+        if (!opened) return;
+        await openProject(opened.file, opened.handle);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "Project open failed.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [openProject],
+  );
+
+  useEffect(() => {
+    if (!desktopFiles) return;
+    let unlisten: (() => void) | null = null;
+    let mounted = true;
+
+    takePendingNativeProjectPaths()
+      .then((paths) => {
+        if (!mounted) return;
+        for (const path of paths) void openNativeProjectFromPath(path);
+      })
+      .catch(() => undefined);
+
+    listenNativeProjectOpen((path) => {
+      void openNativeProjectFromPath(path);
+    })
+      .then((listener) => {
+        if (!mounted) {
+          listener?.();
+          return;
+        }
+        unlisten = listener;
+      })
+      .catch(() => undefined);
+
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, [desktopFiles, openNativeProjectFromPath]);
+
+  async function openNativeProject() {
+    setBusy(true);
+    try {
+      const opened = await openNativeProjectFile();
+      if (!opened) {
+        setMessage("Open cancelled.");
+        return;
+      }
+      await openProject(opened.file, opened.handle);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Project open failed.");
     } finally {
@@ -167,6 +249,7 @@ export default function App() {
       blob,
       suggestedName: projectFileName(project),
       handle: projectFileHandle,
+      desktop: desktopFiles,
       picker: window as ProjectSavePicker,
       fallbackDownload: downloadBlob,
     });
@@ -189,8 +272,17 @@ export default function App() {
   async function exportWorkbook() {
     if (!project) return;
     const blob = await exportReconciliationWorkbook(project);
-    downloadBlob(blob, exportFileName(project));
-    setMessage("Excel reconciliation workbook downloaded.");
+    const result = await saveExportFile({
+      blob,
+      suggestedName: exportFileName(project),
+      desktop: desktopFiles,
+      fallbackDownload: downloadBlob,
+    });
+    if (result.mode === "cancelled") {
+      setMessage("Export cancelled.");
+      return;
+    }
+    setMessage(result.mode === "downloaded" ? "Excel reconciliation workbook downloaded." : `Excel reconciliation workbook saved to ${result.fileName}.`);
   }
 
   function applyAllocation(allocation: Allocation) {
@@ -306,6 +398,7 @@ export default function App() {
                 <button
                   key={item}
                   className={tab === item ? "active" : ""}
+                  aria-label={item}
                   title={item}
                   onClick={() => setTab(item)}
                 >
@@ -314,11 +407,11 @@ export default function App() {
                 </button>
               ))}
             </nav>
-            <button className="secondary" onClick={openHome}>
+            <button className="secondary" aria-label="New Grant" onClick={openHome}>
               <span className="save-full">New Grant</span>
               <span className="save-short">New</span>
             </button>
-            <button className="secondary" onClick={saveProject}>
+            <button className="secondary" aria-label="Save Project" onClick={saveProject}>
               <span className="save-full">Save Project</span>
               <span className="save-short">Save</span>
             </button>
@@ -338,6 +431,7 @@ export default function App() {
             setFiles={setFiles}
             onImport={importProject}
             onOpen={openProject}
+            onOpenNative={desktopFiles ? openNativeProject : undefined}
             onResumeDraft={resumeDraft}
             onDiscardDraft={discardDraft}
             draft={draft ? draftSummary(draft) : null}
@@ -346,7 +440,7 @@ export default function App() {
           />
         ) : (
           <>
-            <SaveNotice draftStatus={draftStatus} projectFileName={projectFileHandle?.name} onSave={saveProject} />
+            <SaveNotice draftStatus={draftStatus} projectFileName={projectFileHandle?.name} onSave={saveProject} nativeSave={Boolean(desktopFiles)} />
             {tab === "Dashboard" && (
               <Dashboard
                 project={project}
@@ -387,6 +481,7 @@ function ImportScreen({
   setFiles,
   onImport,
   onOpen,
+  onOpenNative,
   onResumeDraft,
   onDiscardDraft,
   draft,
@@ -399,10 +494,11 @@ function ImportScreen({
     budgetVersionLabel: string;
   };
   setSetup: (setup: ReturnType<typeof defaultFiscalYear> & { grantName: string; grantCode: string; budgetVersionLabel: string }) => void;
-  files: { budget?: File; accounts?: File; invoices?: File; staff?: File };
-  setFiles: (files: { budget?: File; accounts?: File; invoices?: File; staff?: File }) => void;
+  files: { budget?: File; accounts?: File; invoices?: File; staff?: File; priorProject?: File };
+  setFiles: (files: { budget?: File; accounts?: File; invoices?: File; staff?: File; priorProject?: File }) => void;
   onImport: () => void;
   onOpen: (file?: File) => void;
+  onOpenNative?: () => void;
   onResumeDraft: () => void;
   onDiscardDraft: () => void;
   draft: DraftSummary | null;
@@ -436,6 +532,11 @@ function ImportScreen({
           <span>Open saved .recon project</span>
           <input type="file" accept=".recon" onChange={(event) => onOpen(event.target.files?.[0])} />
         </label>
+        {onOpenNative && (
+          <button className="secondary" disabled={busy} onClick={onOpenNative}>
+            Open .recon Project
+          </button>
+        )}
         <p className="draft-status">{draftStatus}</p>
       </section>
 
@@ -489,6 +590,13 @@ function ImportScreen({
           <FileInput label="Account summary" file={files.accounts} onFile={(accounts) => setFiles({ ...files, accounts })} />
           <FileInput label="Invoice detail (optional)" file={files.invoices} onFile={(invoices) => setFiles({ ...files, invoices })} />
           <FileInput label="Staff payroll (optional)" file={files.staff} onFile={(staff) => setFiles({ ...files, staff })} />
+          <FileInput
+            label="Prior .recon carryover (optional)"
+            file={files.priorProject}
+            accept=".recon"
+            placeholder="Choose prior project"
+            onFile={(priorProject) => setFiles({ ...files, priorProject })}
+          />
         </div>
         <button className="primary" disabled={busy} onClick={onImport}>
           {busy ? "Importing..." : "Import and Match"}
@@ -498,13 +606,24 @@ function ImportScreen({
   );
 }
 
-function SaveNotice({ draftStatus, projectFileName, onSave }: { draftStatus: string; projectFileName?: string; onSave: () => void }) {
+function SaveNotice({
+  draftStatus,
+  projectFileName,
+  onSave,
+  nativeSave,
+}: {
+  draftStatus: string;
+  projectFileName?: string;
+  onSave: () => void;
+  nativeSave: boolean;
+}) {
   return (
     <div className="save-notice">
       <div>
         <strong>Autosave is local to this browser.</strong>
         <span>
           {draftStatus} {projectFileName ? `Save Project overwrites ${projectFileName}.` : "First save chooses a .recon file; later saves overwrite it."} Rename the file in the save dialog if you want a separate copy.
+          {nativeSave ? " Desktop saves use the system file dialog." : ""}
         </span>
       </div>
       <button className="primary" onClick={onSave}>
@@ -873,11 +992,21 @@ function AllocationTable({
   onChange,
   selectable,
 }: ReviewProps & { title: string; rows: Allocation[]; selectable?: SelectionProps }) {
+  const budgetLineOptions = selectable ? reviewBudgetLineOptions(budgetLines, selectable.filters) : budgetLines;
+  const reviewAmount = rows.reduce((total, allocation) => total + Math.abs(allocationAmount(project, allocation)), 0);
+  const missingBudgetLines = rows.filter((allocation) => !allocation.budgetLineId).length;
+  const manualDecisions = rows.filter((allocation) => allocation.matchBasis === "manual").length;
   return (
     <div className="screen">
       <ScreenHeader title={title} subtitle="Open every auto-match, weak match, and variance." />
       {selectable && (
         <>
+          <div className="review-summary" aria-label="Review queue summary">
+            <SummaryStat label="Visible items" value={`${rows.length}`} />
+            <SummaryStat label="Visible amount" value={currency(reviewAmount)} />
+            <SummaryStat label="No budget line" value={`${missingBudgetLines}`} />
+            <SummaryStat label="Manual decisions" value={`${manualDecisions}`} />
+          </div>
           <ReviewQueueFilters
             filters={selectable.filters}
             options={selectable.filterOptions}
@@ -888,7 +1017,7 @@ function AllocationTable({
           />
           <ReviewBulkEditor
             project={project}
-            budgetLines={budgetLines}
+            budgetLines={budgetLineOptions}
             selectedRows={selectable.selectedRows}
             onApply={(allocations) => {
               selectable.onBulkChange(allocations);
@@ -938,7 +1067,7 @@ function AllocationTable({
                     </td>
                   )}
                   <td><StatusPill status={allocation.status} /></td>
-                  <td>{allocation.matchBasis}</td>
+                  <td className="basis-cell">{allocation.matchBasis}</td>
                   <td>
                     <strong>{purchase ? spendingName(purchase) : variance?.accountNumber}</strong>
                     <span className="muted block">
@@ -946,7 +1075,7 @@ function AllocationTable({
                     </span>
                     <span className="muted block">{allocation.reasons.join(" ")}</span>
                   </td>
-                  <td>{currency(amount)}</td>
+                  <td className="amount-cell">{currency(amount)}</td>
                   <td>
                     <select
                       value={allocation.budgetLineId ?? ""}
@@ -955,9 +1084,9 @@ function AllocationTable({
                       }
                     >
                       <option value="">No budget line</option>
-                      {budgetLines.map((budgetLine) => (
+                      {budgetLineOptions.map((budgetLine) => (
                         <option key={budgetLine.id} value={budgetLine.id}>
-                          {budgetLine.functionCode} / {budgetLine.objectBucket} / {budgetLine.description.slice(0, 70)}
+                          {reviewBudgetLineLabel(budgetLine)}
                         </option>
                       ))}
                     </select>
@@ -972,6 +1101,15 @@ function AllocationTable({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function SummaryStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="review-summary-item">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -1081,7 +1219,7 @@ function ReviewBulkEditor({
         <option value="__none__">No budget line</option>
         {budgetLines.map((budgetLine) => (
           <option key={budgetLine.id} value={budgetLine.id}>
-            {budgetLine.functionCode} / {budgetLine.objectBucket} / {budgetLine.description.slice(0, 70)}
+            {reviewBudgetLineLabel(budgetLine)}
           </option>
         ))}
       </select>
@@ -1177,6 +1315,31 @@ function filterReviewRows(project: Project, budgetLines: BudgetLine[], rows: All
     if (filters.status && allocation.status !== filters.status) return false;
     return !keyword || context.keywordText.includes(keyword);
   });
+}
+
+export function reviewBudgetLineOptions(
+  budgetLines: BudgetLine[],
+  filters: Pick<ReviewFilters, "functionCode" | "objectCode">,
+): BudgetLine[] {
+  const objectBucket = filters.objectCode ? objectBucketFromCode(filters.objectCode) : "";
+  return budgetLines.filter((line) => {
+    if (filters.functionCode && line.functionCode !== filters.functionCode) return false;
+    if (objectBucket && line.objectBucket !== objectBucket) return false;
+    return true;
+  });
+}
+
+export function reviewBudgetLineLabel(budgetLine: BudgetLine): string {
+  return [
+    compactFunctionCode(budgetLine.functionCode),
+    budgetLine.objectBucket,
+    currency(budgetLine.approvedAmount),
+    budgetLine.description.slice(0, 70),
+  ].join(" / ");
+}
+
+function compactFunctionCode(functionCode: string): string {
+  return functionCode.split(":")[0]?.trim() || functionCode;
 }
 
 function allocationReviewContext(project: Project, budgetLines: BudgetLine[], allocation: Allocation) {

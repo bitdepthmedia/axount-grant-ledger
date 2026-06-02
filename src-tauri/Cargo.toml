@@ -1,12 +1,12 @@
 [package]
-name = "axount-grant-ledger"
+name = "reconsile"
 version = "0.1.0"
 description = "Local grant reconciliation"
 authors = ["aXount"]
 edition = "2021"
 
 [lib]
-name = "axount_grant_ledger_lib"
+name = "reconsile_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -16,3 +16,4 @@ tauri-build = { version = "2.6.1", features = [] }
 tauri = { version = "2.11.1", features = [] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+rfd = "0.15.4"
