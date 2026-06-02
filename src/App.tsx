@@ -7,7 +7,7 @@ import {
   openNativeProjectPath,
   takePendingNativeProjectPaths,
 } from "./lib/desktopFiles";
-import { objectBucketFromCode } from "./lib/codes";
+import { functionCodesMatch, objectBucketFromCode } from "./lib/codes";
 import { clearLatestDraft, draftSummary, loadLatestDraft, saveLatestDraft, type DraftSummary } from "./lib/draftStore";
 import { saveExportFile, saveProjectFile, type ProjectSavePicker, type SavedProjectFileHandle } from "./lib/fileSave";
 import { exportFileName, exportReconciliationWorkbook, projectTotals } from "./lib/exportWorkbook";
@@ -45,6 +45,8 @@ interface ReviewFilters {
   status: ReviewStatus | "";
   keyword: string;
 }
+
+type ReviewQueueMode = "accounts" | "budget";
 
 interface BudgetLineFilters {
   state: string;
@@ -892,6 +894,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 function ReviewQueue({ project, budgetLines, onChange, onBulkChange }: ReviewProps & { onBulkChange: (allocations: Allocation[]) => void }) {
   const [filters, setFilters] = useState<ReviewFilters>({ functionCode: "", objectCode: "", status: "", keyword: "" });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [mode, setMode] = useState<ReviewQueueMode>("accounts");
   const allRows = useMemo(
     () =>
       project.allocations
@@ -943,6 +946,7 @@ function ReviewQueue({ project, budgetLines, onChange, onBulkChange }: ReviewPro
         allRowsSelected,
         filterOptions,
         filters,
+        mode,
         rowCount: rows.length,
         selectedIds,
         selectedRows,
@@ -951,6 +955,7 @@ function ReviewQueue({ project, budgetLines, onChange, onBulkChange }: ReviewPro
         onClearFilters: () => setFilters({ functionCode: "", objectCode: "", status: "", keyword: "" }),
         onClearSelection: () => setSelectedIds(new Set()),
         onFilterChange: updateFilter,
+        onModeChange: setMode,
         onToggleAll: toggleAll,
         onToggleRow: toggleSelection,
       }}
@@ -972,6 +977,7 @@ interface SelectionProps {
   allRowsSelected: boolean;
   filterOptions: ReviewFilterOptions;
   filters: ReviewFilters;
+  mode: ReviewQueueMode;
   rowCount: number;
   selectedIds: Set<string>;
   selectedRows: Allocation[];
@@ -980,6 +986,7 @@ interface SelectionProps {
   onClearFilters: () => void;
   onClearSelection: () => void;
   onFilterChange: (update: Partial<ReviewFilters>) => void;
+  onModeChange: (mode: ReviewQueueMode) => void;
   onToggleAll: (selected: boolean) => void;
   onToggleRow: (allocationId: string, selected: boolean) => void;
 }
@@ -1007,6 +1014,7 @@ function AllocationTable({
             <SummaryStat label="No budget line" value={`${missingBudgetLines}`} />
             <SummaryStat label="Manual decisions" value={`${manualDecisions}`} />
           </div>
+          <ReviewModeToggle mode={selectable.mode} onChange={selectable.onModeChange} />
           <ReviewQueueFilters
             filters={selectable.filters}
             options={selectable.filterOptions}
@@ -1015,17 +1023,20 @@ function AllocationTable({
             onChange={selectable.onFilterChange}
             onClear={selectable.onClearFilters}
           />
-          <ReviewBulkEditor
-            project={project}
-            budgetLines={budgetLineOptions}
-            selectedRows={selectable.selectedRows}
-            onApply={(allocations) => {
-              selectable.onBulkChange(allocations);
-              selectable.onClearSelection();
-            }}
-          />
+          {selectable.mode === "accounts" && (
+            <ReviewBulkEditor
+              project={project}
+              budgetLines={budgetLineOptions}
+              selectedRows={selectable.selectedRows}
+              onApply={(allocations) => {
+                selectable.onBulkChange(allocations);
+                selectable.onClearSelection();
+              }}
+            />
+          )}
         </>
       )}
+      {(!selectable || selectable.mode === "accounts") && (
       <div className="table-wrap">
         <table>
           <thead>
@@ -1101,7 +1112,158 @@ function AllocationTable({
           </tbody>
         </table>
       </div>
+      )}
+      {selectable?.mode === "budget" && (
+        <BudgetReviewTable
+          project={project}
+          budgetLines={budgetLineOptions}
+          rows={rows}
+          onChange={onChange}
+        />
+      )}
     </div>
+  );
+}
+
+function ReviewModeToggle({ mode, onChange }: { mode: ReviewQueueMode; onChange: (mode: ReviewQueueMode) => void }) {
+  return (
+    <div className="review-mode-toggle" role="group" aria-label="Review queue view">
+      <button
+        type="button"
+        className={mode === "accounts" ? "active" : undefined}
+        aria-pressed={mode === "accounts"}
+        onClick={() => onChange("accounts")}
+      >
+        Account View
+      </button>
+      <button
+        type="button"
+        className={mode === "budget" ? "active" : undefined}
+        aria-pressed={mode === "budget"}
+        onClick={() => onChange("budget")}
+      >
+        Budget View
+      </button>
+    </div>
+  );
+}
+
+function BudgetReviewTable({
+  project,
+  budgetLines,
+  rows,
+  onChange,
+}: {
+  project: Project;
+  budgetLines: BudgetLine[];
+  rows: Allocation[];
+  onChange: (allocation: Allocation) => void;
+}) {
+  const lineRows = budgetLines
+    .map((budgetLine) => ({
+      budgetLine,
+      items: reviewItemsForBudgetLine(project, budgetLines, rows, budgetLine),
+    }))
+    .filter((row) => row.items.length > 0);
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Budget Line</th>
+            <th>Approved</th>
+            <th>Matched Items</th>
+            <th>Account Items</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lineRows.map(({ budgetLine, items }) => {
+            const matchedItems = items.filter((allocation) => allocation.budgetLineId === budgetLine.id);
+            const matchedAmount = matchedItems.reduce((total, allocation) => total + Math.abs(allocationAmount(project, allocation)), 0);
+            return (
+              <tr key={budgetLine.id}>
+                <td>
+                  <strong>{compactFunctionCode(budgetLine.functionCode)} / {budgetLine.objectBucket}</strong>
+                  <span className="muted block">{budgetLine.description}</span>
+                </td>
+                <td className="amount-cell">{currency(budgetLine.approvedAmount)}</td>
+                <td>
+                  <strong>{matchedItems.length}</strong>
+                  <span className="muted block">{currency(matchedAmount)} selected</span>
+                </td>
+                <td>
+                  <BudgetAccountMultiSelect
+                    project={project}
+                    budgetLine={budgetLine}
+                    items={items}
+                    onChange={onChange}
+                  />
+                </td>
+              </tr>
+            );
+          })}
+          {!lineRows.length && (
+            <tr>
+              <td colSpan={4}>No budget lines have account items under these filters.</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BudgetAccountMultiSelect({
+  project,
+  budgetLine,
+  items,
+  onChange,
+}: {
+  project: Project;
+  budgetLine: BudgetLine;
+  items: Allocation[];
+  onChange: (allocation: Allocation) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const selectedCount = items.filter((allocation) => allocation.budgetLineId === budgetLine.id).length;
+  const filteredItems = filterBudgetAccountItems(project, items, query);
+
+  function toggleItem(allocation: Allocation, selected: boolean) {
+    onChange({ ...allocation, budgetLineId: selected ? budgetLine.id : undefined, matchBasis: "manual" });
+  }
+
+  return (
+    <details className="multi-select-dropdown">
+      <summary>{selectedCount ? `${selectedCount} selected` : "Match account items"}</summary>
+      <div className="multi-select-panel">
+        <input
+          type="search"
+          placeholder="Search account items"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <div className="multi-select-options">
+          {filteredItems.map((allocation) => {
+            const checked = allocation.budgetLineId === budgetLine.id;
+            return (
+              <label key={allocation.id} className={checked ? "selected-option" : undefined}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(event) => toggleItem(allocation, event.target.checked)}
+                />
+                <span>
+                  <strong>{reviewAccountItemLabel(project, allocation)}</strong>
+                  <span className="muted block">{currency(allocationAmount(project, allocation))}</span>
+                </span>
+              </label>
+            );
+          })}
+          {!filteredItems.length && <p className="empty-option">No matching account items.</p>}
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -1336,6 +1498,50 @@ export function reviewBudgetLineLabel(budgetLine: BudgetLine): string {
     currency(budgetLine.approvedAmount),
     budgetLine.description.slice(0, 70),
   ].join(" / ");
+}
+
+export function reviewItemsForBudgetLine(
+  project: Project,
+  budgetLines: BudgetLine[],
+  rows: Allocation[],
+  budgetLine: BudgetLine,
+): Allocation[] {
+  return rows.filter((allocation) => {
+    if (allocation.budgetLineId === budgetLine.id) return true;
+    const context = allocationReviewContext(project, budgetLines, allocation);
+    return functionCodesMatch(budgetLine.functionCode, context.functionCode) && objectBucketFromCode(context.objectCode) === budgetLine.objectBucket;
+  });
+}
+
+function filterBudgetAccountItems(project: Project, items: Allocation[], query: string): Allocation[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return items;
+  return items.filter((allocation) => reviewAccountItemSearchText(project, allocation).includes(normalizedQuery));
+}
+
+function reviewAccountItemLabel(project: Project, allocation: Allocation): string {
+  const purchase = project.purchases.find((item) => item.id === allocation.purchaseId);
+  const variance = project.controlVariances.find((item) => item.id === allocation.accountSummaryId);
+  if (purchase) return `${spendingName(purchase)} / ${purchase.accountNumber}`;
+  return `${variance?.accountNumber ?? "Account variance"} / ${variance?.accountDescription ?? ""}`;
+}
+
+function reviewAccountItemSearchText(project: Project, allocation: Allocation): string {
+  const purchase = project.purchases.find((item) => item.id === allocation.purchaseId);
+  const variance = project.controlVariances.find((item) => item.id === allocation.accountSummaryId);
+  return [
+    reviewAccountItemLabel(project, allocation),
+    purchase ? spendingReference(purchase) : "",
+    purchase?.accountDescription,
+    variance?.accountDescription,
+    allocation.matchBasis,
+    allocation.status,
+    allocation.reviewNote,
+    ...allocation.reasons,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 function compactFunctionCode(functionCode: string): string {

@@ -1,5 +1,6 @@
 import { makeId, stableId } from "./ids";
-import { tokenOverlap } from "./text";
+import { significantTokens, tokenOverlap } from "./text";
+import { functionCodesMatch } from "./codes";
 import type {
   AccountSummary,
   Allocation,
@@ -16,34 +17,35 @@ export function createAllocations(purchases: Purchase[], budgetLines: BudgetLine
     const candidates = scoreCandidates(purchase, budgetLines);
     const best = candidates[0];
     const sameBucket = budgetLines.filter(
-      (line) => line.functionCode === purchase.functionCode && line.objectBucket === purchase.objectBucket,
+      (line) => functionCodesMatch(line.functionCode, purchase.functionCode) && line.objectBucket === purchase.objectBucket,
     );
 
-    if (purchase.sourceType === "staff" && sameBucket.length === 1) {
+    const staffLine = purchase.sourceType === "staff" ? specificTitleMatch(purchase.accountDescription, sameBucket) : undefined;
+    if (staffLine) {
       return {
         id: stableId("allocation", [purchase.id]),
         purchaseId: purchase.id,
-        budgetLineId: sameBucket[0].id,
-        status: "Allowable",
+        budgetLineId: staffLine.id,
+        status: "Review Required",
         matchBasis: "specific-budget-line",
         confidence: 75,
-        allowableAmount: purchase.paymentAmount,
+        allowableAmount: 0,
         nonAllowableAmount: 0,
         reviewNote: "",
-        candidateLineIds: [sameBucket[0].id],
-        reasons: ["Staff payroll matched the only approved budget line for this function and object bucket."],
+        candidateLineIds: candidates.slice(0, 5).map((candidate) => candidate.budgetLineId),
+        reasons: ["Payroll account title matches one approved budget line for this function and object bucket."],
       };
     }
 
-    if (best && best.score >= 70) {
+    if (purchase.sourceType !== "staff" && best && best.score >= 70) {
       return {
         id: stableId("allocation", [purchase.id]),
         purchaseId: purchase.id,
         budgetLineId: best.budgetLineId,
-        status: "Allowable",
+        status: "Review Required",
         matchBasis: "specific-budget-line",
         confidence: best.score,
-        allowableAmount: purchase.paymentAmount,
+        allowableAmount: 0,
         nonAllowableAmount: 0,
         reviewNote: "",
         candidateLineIds: candidates.slice(0, 5).map((candidate) => candidate.budgetLineId),
@@ -55,7 +57,6 @@ export function createAllocations(purchases: Purchase[], budgetLines: BudgetLine
       return {
         id: stableId("allocation", [purchase.id]),
         purchaseId: purchase.id,
-        budgetLineId: best?.budgetLineId,
         status: "Review Required",
         matchBasis: "function-object",
         confidence: best?.score ?? 40,
@@ -74,7 +75,7 @@ export function createAllocations(purchases: Purchase[], budgetLines: BudgetLine
       matchBasis: "none",
       confidence: 0,
       allowableAmount: 0,
-      nonAllowableAmount: purchase.paymentAmount,
+      nonAllowableAmount: 0,
       reviewNote: "No approved budget line found for this function and object bucket.",
       candidateLineIds: [],
       reasons: ["No function/object budget match."],
@@ -84,7 +85,7 @@ export function createAllocations(purchases: Purchase[], budgetLines: BudgetLine
 
 export function scoreCandidates(purchase: Purchase, budgetLines: BudgetLine[]): MatchCandidate[] {
   return budgetLines
-    .filter((line) => line.functionCode === purchase.functionCode && line.objectBucket === purchase.objectBucket)
+    .filter((line) => functionCodesMatch(line.functionCode, purchase.functionCode) && line.objectBucket === purchase.objectBucket)
     .map((line) => {
       const reasons: string[] = ["Function and object bucket match."];
       let score = 50;
@@ -151,19 +152,37 @@ export function createControlVariances(accounts: AccountSummary[], purchases: Pu
     .filter((variance) => variance.varianceAmount > 0.01);
 }
 
-export function createVarianceAllocations(variances: ControlVariance[]): Allocation[] {
-  return variances.map((variance) => ({
-    id: makeId("allocation-variance"),
-    accountSummaryId: variance.id,
-    status: "Review Required",
-    matchBasis: "account-control-variance",
-    confidence: 0,
-    allowableAmount: 0,
-    nonAllowableAmount: 0,
-    reviewNote: "Account file shows obligated spending not supported by uploaded spending detail.",
-    candidateLineIds: [],
-    reasons: ["Account obligated amount exceeds uploaded spending total for this account."],
-  }));
+export function createVarianceAllocations(variances: ControlVariance[], budgetLines: BudgetLine[] = []): Allocation[] {
+  return variances.map((variance) => {
+    const candidates = budgetLines
+      .filter((line) => functionCodesMatch(line.functionCode, variance.functionCode) && line.objectBucket === variance.objectBucket)
+      .map((line) => ({ line, distance: Math.abs(line.approvedAmount - variance.varianceAmount) }))
+      .sort((a, b) => a.distance - b.distance || b.line.approvedAmount - a.line.approvedAmount)
+      .map((candidate) => candidate.line);
+    const requiresTitleEvidence = variance.objectBucket === "Salaries" || variance.objectBucket === "Benefits";
+    const line = requiresTitleEvidence
+      ? specificTitleMatch(variance.accountDescription, candidates)
+      : candidates.length === 1
+        ? candidates[0]
+        : specificTitleMatch(variance.accountDescription, candidates);
+    return {
+      id: makeId("allocation-variance"),
+      accountSummaryId: variance.id,
+      budgetLineId: line?.id,
+      status: "Review Required",
+      matchBasis: "account-control-variance",
+      confidence: line ? 40 : 0,
+      allowableAmount: 0,
+      nonAllowableAmount: 0,
+      reviewNote: "Account file shows obligated spending not supported by uploaded spending detail.",
+      candidateLineIds: candidates.slice(0, 5).map((line) => line.id),
+      reasons: [
+        line
+          ? "Account variance assigned to a budget line with matching function, object bucket, and account title evidence."
+          : "Account obligated amount exceeds uploaded spending total for this account.",
+      ],
+    };
+  });
 }
 
 export function rollupBudgetLines(
@@ -211,4 +230,64 @@ export function rollupBudgetLines(
 
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
+}
+
+const GENERIC_TITLE_TOKENS = new Set([
+  "benefit",
+  "benefits",
+  "de",
+  "dw",
+  "ece",
+  "ell",
+  "el",
+  "eng",
+  "hb",
+  "hhs",
+  "holb",
+  "horizon",
+  "kms",
+  "ml",
+  "mld",
+  "mentor",
+  "para",
+  "parapro",
+  "payroll",
+  "pooled",
+  "retirement",
+  "rtmt",
+  "sal",
+  "salary",
+  "sec",
+  "section",
+  "specialist",
+  "stipend",
+  "stipends",
+  "supplies",
+  "tb",
+  "teacher",
+  "teachers",
+]);
+
+function specificTitleMatch(accountDescription: string, lines: BudgetLine[]): BudgetLine | undefined {
+  const ranked = lines
+    .map((line) => ({
+      line,
+      hits: specificTitleHits(accountDescription, line.description),
+    }))
+    .filter((candidate) => candidate.hits.length > 0)
+    .sort((a, b) => b.hits.length - a.hits.length || b.line.approvedAmount - a.line.approvedAmount);
+  if (!ranked.length) return undefined;
+  const [first, second] = ranked;
+  if (second && second.hits.length === first.hits.length) return undefined;
+  return first.line;
+}
+
+function specificTitleHits(accountDescription: string, budgetDescription: string): string[] {
+  const left = titleTokens(accountDescription);
+  const right = titleTokens(budgetDescription);
+  return [...left].filter((token) => right.has(token));
+}
+
+function titleTokens(value: string): Set<string> {
+  return new Set([...significantTokens(value)].filter((token) => !GENERIC_TITLE_TOKENS.has(token)));
 }

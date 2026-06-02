@@ -776,6 +776,32 @@ textarea {
   border-color: #cce5de;
 }
 
+.review-mode-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  width: min(100%, 320px);
+  padding: 3px;
+  border: 1px solid #d7e0ea;
+  border-radius: 8px;
+  background: #eef3f8;
+}
+
+.review-mode-toggle button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #506176;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.review-mode-toggle button.active {
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: 0 1px 4px rgba(23, 32, 51, 0.12);
+}
+
 .budget-line-filters strong,
 .review-filters strong,
 .bulk-editor strong {
@@ -935,6 +961,91 @@ tbody tr:last-child td {
   font-size: 13px;
 }
 
+.multi-select-dropdown {
+  position: relative;
+  min-width: 320px;
+}
+
+.multi-select-dropdown summary {
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid #cbd6e4;
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  list-style: none;
+}
+
+.multi-select-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+
+.multi-select-dropdown summary::after {
+  content: "v";
+  float: right;
+  color: #718096;
+}
+
+.multi-select-dropdown[open] summary {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(40, 141, 122, 0.12);
+}
+
+.multi-select-panel {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  width: min(520px, 82vw);
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid #cbd6e4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 46px rgba(23, 32, 51, 0.2);
+}
+
+.multi-select-panel input[type="search"] {
+  width: 100%;
+}
+
+.multi-select-options {
+  display: grid;
+  max-height: 300px;
+  margin-top: 8px;
+  overflow: auto;
+}
+
+.multi-select-options label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 9px;
+  padding: 9px;
+  border-radius: 7px;
+  color: #243044;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.multi-select-options label:hover,
+.multi-select-options label.selected-option {
+  background: #eef8f5;
+}
+
+.multi-select-options input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.empty-option {
+  margin: 8px;
+  color: var(--quiet);
+  font-size: 13px;
+}
+
 .export-actions {
   display: flex;
   gap: 12px;
@@ -979,8 +1090,13 @@ tbody tr:last-child td {
   .review-summary,
   .budget-line-filters,
   .review-filters,
-  .bulk-editor {
+  .bulk-editor,
+  .review-mode-toggle {
     grid-template-columns: 1fr;
+  }
+
+  .multi-select-dropdown {
+    min-width: 240px;
   }
 
   .compact-meta {

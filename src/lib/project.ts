@@ -2,6 +2,7 @@ import JSZip from "jszip";
 import { makeId } from "./ids";
 import { createAllocations, createControlVariances, createVarianceAllocations } from "./matching";
 import { currency } from "./money";
+import { suggestFunctionCodeMappings } from "./sourceChecks";
 import { normalizeText } from "./text";
 import type { Allocation, AuditEvent, BudgetLine, CarryoverSource, Project, WorkbookImportResult } from "./types";
 
@@ -18,7 +19,7 @@ export function createProject(input: {
   const now = new Date().toISOString();
   const baseAllocations = createAllocations(input.imports.purchases, input.imports.budgetVersion.lines);
   const controlVariances = createControlVariances(input.imports.accounts, input.imports.purchases);
-  const allocations = [...baseAllocations, ...createVarianceAllocations(controlVariances)];
+  const allocations = [...baseAllocations, ...createVarianceAllocations(controlVariances, input.imports.budgetVersion.lines)];
   const project: Project = {
     schemaVersion: 1,
     id: makeId("project"),
@@ -37,7 +38,7 @@ export function createProject(input: {
     purchases: input.imports.purchases,
     allocations,
     carryovers: [],
-    functionCodeMappings: {},
+    functionCodeMappings: suggestFunctionCodeMappings(input.imports.budgetVersion.lines, input.imports.accounts),
     controlVariances,
     auditLog: [audit("Project created", "Imported budget, account, and spending workbooks.")],
   };

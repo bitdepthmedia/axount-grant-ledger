@@ -1,4 +1,5 @@
 import type { AccountSummary, BudgetLine, ObjectBucket } from "./types";
+import { functionCodeRoot } from "./codes";
 
 export type BudgetAccountVarianceType = "Missing In Accounts" | "Extra In Accounts";
 export type FunctionCodeMappings = Record<string, string>;
@@ -20,6 +21,7 @@ export function budgetAccountVariances(
   accounts: AccountSummary[],
   functionCodeMappings: FunctionCodeMappings = {},
 ): BudgetAccountVariance[] {
+  const mappings = { ...suggestFunctionCodeMappings(budgetLines, accounts), ...functionCodeMappings };
   const approvedByBucket = new Map<string, number>();
   const accountByBucket = new Map<string, number>();
 
@@ -29,7 +31,7 @@ export function budgetAccountVariances(
   }
 
   for (const account of accounts) {
-    const key = varianceKey(mappedFunctionCode(account.functionCode, functionCodeMappings), account.objectBucket);
+    const key = varianceKey(mappedFunctionCode(account.functionCode, mappings), account.objectBucket);
     accountByBucket.set(key, (accountByBucket.get(key) ?? 0) + account.ytdBudget);
   }
 
@@ -85,6 +87,27 @@ export function budgetAccountSummary(
 
 export function mappedFunctionCode(functionCode: string, functionCodeMappings: FunctionCodeMappings): string {
   return functionCodeMappings[functionCode] || functionCode;
+}
+
+export function suggestFunctionCodeMappings(
+  budgetLines: BudgetLine[],
+  accounts: AccountSummary[],
+): FunctionCodeMappings {
+  const budgetByRoot = new Map<string, Set<string>>();
+  for (const line of budgetLines) {
+    const root = functionCodeRoot(line.functionCode);
+    if (!root || line.functionCode === root) continue;
+    const codes = budgetByRoot.get(root) ?? new Set<string>();
+    codes.add(line.functionCode);
+    budgetByRoot.set(root, codes);
+  }
+
+  const mappings: FunctionCodeMappings = {};
+  for (const account of accounts) {
+    const candidates = budgetByRoot.get(functionCodeRoot(account.functionCode));
+    if (candidates?.size === 1) mappings[account.functionCode] = [...candidates][0];
+  }
+  return mappings;
 }
 
 function varianceKey(functionCode: string, objectBucket: ObjectBucket): string {

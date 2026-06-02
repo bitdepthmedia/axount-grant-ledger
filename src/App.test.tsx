@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { reviewBudgetLineLabel, reviewBudgetLineOptions } from "./App";
-import type { BudgetLine } from "./lib/types";
+import { reviewBudgetLineLabel, reviewBudgetLineOptions, reviewItemsForBudgetLine } from "./App";
+import type { Allocation, BudgetLine, Project, Purchase } from "./lib/types";
 
 describe("review budget line dropdown options", () => {
   it("compounds review queue function and object filters", () => {
@@ -32,6 +32,26 @@ describe("review budget line dropdown options", () => {
       "221 / Purchased Services / $16,000.00 / Sub for Vertical Alignment Training Equip subject area tchrs with the",
     );
   });
+
+  it("scopes budget-first account item options to the budget line function and object bucket", () => {
+    const line = budgetLine("line-221-services", "221: Improvement of Instruction", "Purchased Services");
+    const project = reviewProject(
+      [
+        purchase("purchase-221-services", "221", "3220", "Purchased Services"),
+        purchase("purchase-221-supplies", "221", "5110", "Supplies"),
+        purchase("purchase-283-services", "283", "3220", "Purchased Services"),
+      ],
+      [
+        allocation("allocation-221-services", "purchase-221-services"),
+        allocation("allocation-221-supplies", "purchase-221-supplies"),
+        allocation("allocation-283-services", "purchase-283-services"),
+      ],
+    );
+
+    expect(reviewItemsForBudgetLine(project, [line], project.allocations, line).map((item) => item.id)).toEqual([
+      "allocation-221-services",
+    ]);
+  });
 });
 
 function optionIds(lines: BudgetLine[], filters: { functionCode: string; objectCode: string }) {
@@ -47,5 +67,66 @@ function budgetLine(id: string, functionCode: string, objectBucket: BudgetLine["
     approvedAmount: 100,
     sourceRow: 1,
     columnLabel: objectBucket,
+  };
+}
+
+function purchase(id: string, functionCode: string, objectCode: string, objectBucket: Purchase["objectBucket"]): Purchase {
+  return {
+    id,
+    sourceType: "invoice",
+    poNumber: id,
+    accountNumber: `21-${functionCode}-${objectCode}-001-145-7640`,
+    accountDescription: id,
+    date: "2026-01-01",
+    vendorCode: id,
+    vendorName: id,
+    revAmount: 100,
+    paymentAmount: 100,
+    inProcessAmount: 0,
+    status: "Paid",
+    requisitionNumber: "",
+    functionCode,
+    objectCode,
+    objectBucket,
+  };
+}
+
+function allocation(id: string, purchaseId: string): Allocation {
+  return {
+    id,
+    purchaseId,
+    status: "Review Required",
+    matchBasis: "function-object",
+    confidence: 40,
+    allowableAmount: 0,
+    nonAllowableAmount: 0,
+    reviewNote: "",
+    candidateLineIds: [],
+    reasons: [],
+  };
+}
+
+function reviewProject(purchases: Purchase[], allocations: Allocation[]): Project {
+  return {
+    schemaVersion: 1,
+    id: "project",
+    grantName: "Grant",
+    grantCode: "T2",
+    fiscalYear: "FY26",
+    fiscalYearStart: "2025-07-01",
+    fiscalYearEnd: "2026-06-30",
+    budgetVersionLabel: "Budget",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    sourceFiles: [],
+    budgetVersions: [],
+    activeBudgetVersionId: "",
+    accounts: [],
+    purchases,
+    allocations,
+    carryovers: [],
+    functionCodeMappings: {},
+    controlVariances: [],
+    auditLog: [],
   };
 }

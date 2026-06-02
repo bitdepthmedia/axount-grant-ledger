@@ -47,6 +47,18 @@ describe("source budget vs account checks", () => {
     expect(budgetAccountVariances(budgetLines, accounts)).toHaveLength(2);
     expect(budgetAccountVariances(budgetLines, accounts, { "119": "125" })).toHaveLength(0);
   });
+
+  it("auto-suggests mappings from plain account functions to labeled budget functions", () => {
+    const budgetLines: BudgetLine[] = [
+      budgetLine("125: Compensatory Education", "Supplies", 1000),
+    ];
+    const accounts: AccountSummary[] = [
+      account("11-125-5110-001-000-3070", 1000),
+    ];
+
+    expect(budgetAccountVariances(budgetLines, accounts)).toHaveLength(0);
+    expect(budgetAccountSummary(budgetLines, accounts).absoluteMismatchTotal).toBe(0);
+  });
 });
 
 function budgetLine(functionCode: string, objectBucket: BudgetLine["objectBucket"], approvedAmount: number): BudgetLine {

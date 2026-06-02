@@ -29,3 +29,11 @@ export function accountParts(accountNumber: string): { functionCode: string; obj
     objectCode: parts[2] ?? "",
   };
 }
+
+export function functionCodeRoot(functionCode: string): string {
+  return functionCode.split(":")[0]?.trim() ?? "";
+}
+
+export function functionCodesMatch(left: string, right: string): boolean {
+  return functionCodeRoot(left) === functionCodeRoot(right);
+}
