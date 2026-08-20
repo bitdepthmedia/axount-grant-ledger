@@ -1,8 +1,8 @@
-# aXount: Grant Ledger
+# Reconsile
 
 Local-first grant reconciliation for K-12 finance teams.
 
-Grant Ledger imports an approved budget workbook, account-budget workbook, and invoice or staff spending workbooks, then helps users compare what was approved, what was spent, what needs review, and what remains. It is designed to run locally with no hosted database or domain.
+Reconsile imports an approved budget workbook, account-budget workbook, and invoice or staff spending workbooks, then helps users compare what was approved, what was spent, what needs review, and what remains. It is designed to run locally with no hosted database or domain.
 
 ## Current Features
 

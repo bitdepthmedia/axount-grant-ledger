@@ -81,7 +81,7 @@ export async function saveProjectFile(input: {
         suggestedName: input.suggestedName,
         types: [
           {
-            description: "Grant Ledger project",
+            description: "Reconsile project",
             accept: { "application/zip": [".recon"] },
           },
         ],

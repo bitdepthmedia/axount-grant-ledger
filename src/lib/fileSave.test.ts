@@ -26,16 +26,26 @@ describe("project file saving", () => {
     const handle = fakeHandle("renamed.recon", writes);
     const fallbackDownload = vi.fn();
 
+    const picker = { showSaveFilePicker: vi.fn().mockResolvedValue(handle) };
     const result = await saveProjectFile({
       blob: new Blob(["first"]),
       suggestedName: "grant.recon",
-      picker: { showSaveFilePicker: vi.fn().mockResolvedValue(handle) },
+      picker,
       fallbackDownload,
     });
 
     expect(result.mode).toBe("picked");
     expect(result.fileName).toBe("renamed.recon");
     expect(result.handle).toBe(handle);
+    expect(picker.showSaveFilePicker).toHaveBeenCalledWith({
+      suggestedName: "grant.recon",
+      types: [
+        {
+          description: "Reconsile project",
+          accept: { "application/zip": [".recon"] },
+        },
+      ],
+    });
     expect(await writes[0].text()).toBe("first");
     expect(fallbackDownload).not.toHaveBeenCalled();
   });

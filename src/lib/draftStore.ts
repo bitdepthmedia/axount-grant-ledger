@@ -1,6 +1,6 @@
 import type { Project } from "./types";
 
-const DB_NAME = "axount-grant-ledger-drafts";
+const DB_NAME = "reconsile-drafts";
 const DB_VERSION = 1;
 const STORE_NAME = "drafts";
 const LATEST_KEY = "latest";

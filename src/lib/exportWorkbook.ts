@@ -12,7 +12,7 @@ const HEADERS = {
 
 export async function exportReconciliationWorkbook(project: Project): Promise<Blob> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "aXount: Grant Ledger";
+  workbook.creator = "Reconsile";
   workbook.created = new Date();
 
   addSummarySheet(workbook, project);
@@ -36,7 +36,7 @@ function addSummarySheet(workbook: ExcelJS.Workbook, project: Project) {
   const sheet = workbook.addWorksheet("Summary");
   const totals = projectTotals(project);
   sheet.addRows([
-    ["aXount: Grant Ledger"],
+    ["Reconsile"],
     ["Grant", project.grantName],
     ["Grant code", project.grantCode],
     ["Fiscal year", project.fiscalYear],

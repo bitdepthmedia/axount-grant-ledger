@@ -172,5 +172,5 @@ export function projectFileName(project: Project): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
-  return `${safe || "grant-ledger-project"}.recon`;
+  return `${safe || "reconsile-project"}.recon`;
 }

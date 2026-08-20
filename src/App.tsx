@@ -31,13 +31,14 @@ import {
   mappedFunctionCode,
   type BudgetAccountVariance,
 } from "./lib/sourceChecks";
-import type { AccountSummary, Allocation, BudgetLine, Project, Purchase, ReviewStatus } from "./lib/types";
+import type { AccountSummary, Allocation, BudgetLine, ControlVariance, Project, Purchase, ReviewStatus } from "./lib/types";
 
 const tabs = ["Dashboard", "Review Queue", "Spending", "Budget Lines", "Accounts", "Functions", "Objects", "Carryover", "Export"];
 
 type Tab = (typeof tabs)[number];
-const SIDEBAR_COLLAPSED_KEY = "axount-grant-ledger-sidebar-collapsed";
+const SIDEBAR_COLLAPSED_KEY = "reconsile-sidebar-collapsed";
 const REVIEW_STATUSES: ReviewStatus[] = ["Allowable", "Not Allowable", "Partially Allowable", "Review Required"];
+const REVIEW_QUEUE_VISIBLE_LIMIT = 250;
 
 interface ReviewFilters {
   functionCode: string;
@@ -47,6 +48,12 @@ interface ReviewFilters {
 }
 
 type ReviewQueueMode = "accounts" | "budget";
+
+interface ReviewContext {
+  functionCode: string;
+  objectCode: string;
+  keywordText: string;
+}
 
 interface BudgetLineFilters {
   state: string;
@@ -374,7 +381,7 @@ export default function App() {
             <img src={axountLogo} alt="" />
           </div>
           <div className="brand-copy">
-            <h1>aXount: Grant Ledger</h1>
+            <h1>Reconsile</h1>
             <p>Local grant reconciliation</p>
           </div>
         </button>
@@ -512,7 +519,7 @@ function ImportScreen({
       <section className="hero-panel">
         <h2>Grant spending clarity that stays on your computer.</h2>
         <p>
-          Import the approved budget, account totals, and invoice or staff detail. Grant Ledger matches spending to budget
+          Import the approved budget, account totals, and invoice or staff detail. Reconsile matches spending to budget
           lines, flags weak matches for review, tracks carryover, and exports an audit-ready workbook.
         </p>
         {draft && (
@@ -895,6 +902,7 @@ function ReviewQueue({ project, budgetLines, onChange, onBulkChange }: ReviewPro
   const [filters, setFilters] = useState<ReviewFilters>({ functionCode: "", objectCode: "", status: "", keyword: "" });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [mode, setMode] = useState<ReviewQueueMode>("accounts");
+  const reviewIndex = useMemo(() => buildReviewContextIndex(project, budgetLines), [project, budgetLines]);
   const allRows = useMemo(
     () =>
       project.allocations
@@ -902,18 +910,20 @@ function ReviewQueue({ project, budgetLines, onChange, onBulkChange }: ReviewPro
         .sort((a, b) => priority(b) - priority(a)),
     [project.allocations],
   );
-  const filterOptions = useMemo(() => reviewFilterOptions(project, budgetLines, allRows), [project, budgetLines, allRows]);
-  const rows = useMemo(() => filterReviewRows(project, budgetLines, allRows, filters), [project, budgetLines, allRows, filters]);
-  const selectedRows = rows.filter((allocation) => selectedIds.has(allocation.id));
-  const allRowsSelected = rows.length > 0 && selectedRows.length === rows.length;
+  const filterOptions = useMemo(() => reviewFilterOptions(allRows, reviewIndex.contextByAllocationId), [allRows, reviewIndex]);
+  const filteredRows = useMemo(() => filterReviewRows(allRows, filters, reviewIndex.contextByAllocationId), [allRows, filters, reviewIndex]);
+  const rows = filteredRows.slice(0, REVIEW_QUEUE_VISIBLE_LIMIT);
+  const selectedRows = filteredRows.filter((allocation) => selectedIds.has(allocation.id));
+  const allRowsSelected = filteredRows.length > 0 && selectedRows.length === filteredRows.length;
+  const hiddenRowCount = Math.max(0, filteredRows.length - rows.length);
 
   useEffect(() => {
-    const rowIds = new Set(rows.map((allocation) => allocation.id));
+    const rowIds = new Set(filteredRows.map((allocation) => allocation.id));
     setSelectedIds((current) => {
       const next = new Set([...current].filter((id) => rowIds.has(id)));
       return next.size === current.size ? current : next;
     });
-  }, [rows]);
+  }, [filteredRows]);
 
   function toggleSelection(allocationId: string, selected: boolean) {
     setSelectedIds((current) => {
@@ -928,7 +938,7 @@ function ReviewQueue({ project, budgetLines, onChange, onBulkChange }: ReviewPro
   }
 
   function toggleAll(selected: boolean) {
-    setSelectedIds(selected ? new Set(rows.map((allocation) => allocation.id)) : new Set());
+    setSelectedIds(selected ? new Set(filteredRows.map((allocation) => allocation.id)) : new Set());
   }
 
   function updateFilter(update: Partial<ReviewFilters>) {
@@ -942,12 +952,17 @@ function ReviewQueue({ project, budgetLines, onChange, onBulkChange }: ReviewPro
       project={project}
       budgetLines={budgetLines}
       onChange={onChange}
+      rowLimitNotice={
+        hiddenRowCount
+          ? `Showing first ${rows.length} of ${filteredRows.length} matching items. Narrow the filters to review the rest.`
+          : ""
+      }
       selectable={{
         allRowsSelected,
         filterOptions,
         filters,
         mode,
-        rowCount: rows.length,
+        rowCount: filteredRows.length,
         selectedIds,
         selectedRows,
         totalCount: allRows.length,
@@ -997,10 +1012,17 @@ function AllocationTable({
   project,
   budgetLines,
   onChange,
+  rowLimitNotice,
   selectable,
-}: ReviewProps & { title: string; rows: Allocation[]; selectable?: SelectionProps }) {
+}: ReviewProps & { title: string; rows: Allocation[]; rowLimitNotice?: string; selectable?: SelectionProps }) {
   const budgetLineOptions = selectable ? reviewBudgetLineOptions(budgetLines, selectable.filters) : budgetLines;
-  const reviewAmount = rows.reduce((total, allocation) => total + Math.abs(allocationAmount(project, allocation)), 0);
+  const purchaseById = useMemo(() => new Map(project.purchases.map((purchase) => [purchase.id, purchase])), [project.purchases]);
+  const varianceById = useMemo(
+    () => new Map(project.controlVariances.map((variance) => [variance.id, variance])),
+    [project.controlVariances],
+  );
+  const budgetLineById = useMemo(() => new Map(budgetLines.map((line) => [line.id, line])), [budgetLines]);
+  const reviewAmount = rows.reduce((total, allocation) => total + Math.abs(allocationAmountFromMaps(allocation, purchaseById, varianceById)), 0);
   const missingBudgetLines = rows.filter((allocation) => !allocation.budgetLineId).length;
   const manualDecisions = rows.filter((allocation) => allocation.matchBasis === "manual").length;
   return (
@@ -1023,6 +1045,7 @@ function AllocationTable({
             onChange={selectable.onFilterChange}
             onClear={selectable.onClearFilters}
           />
+          {rowLimitNotice && <p className="plain-note in-panel">{rowLimitNotice}</p>}
           {selectable.mode === "accounts" && (
             <ReviewBulkEditor
               project={project}
@@ -1061,10 +1084,10 @@ function AllocationTable({
           </thead>
           <tbody>
             {rows.map((allocation) => {
-              const purchase = project.purchases.find((item) => item.id === allocation.purchaseId);
-              const variance = project.controlVariances.find((item) => item.id === allocation.accountSummaryId);
-              const line = budgetLines.find((item) => item.id === allocation.budgetLineId);
-              const amount = allocationAmount(project, allocation);
+              const purchase = allocation.purchaseId ? purchaseById.get(allocation.purchaseId) : undefined;
+              const variance = allocation.accountSummaryId ? varianceById.get(allocation.accountSummaryId) : undefined;
+              const line = allocation.budgetLineId ? budgetLineById.get(allocation.budgetLineId) : undefined;
+              const amount = allocationAmountFromMaps(allocation, purchaseById, varianceById);
               return (
                 <tr key={allocation.id} className={selectable?.selectedIds.has(allocation.id) ? "selected-row" : undefined}>
                   {selectable && (
@@ -1454,11 +1477,38 @@ function allocationAmount(project: Project, allocation: Allocation) {
   return purchase?.paymentAmount ?? variance?.varianceAmount ?? 0;
 }
 
-function reviewFilterOptions(project: Project, budgetLines: BudgetLine[], rows: Allocation[]): ReviewFilterOptions {
+function allocationAmountFromMaps(
+  allocation: Allocation,
+  purchaseById: Map<string, Purchase>,
+  varianceById: Map<string, ControlVariance>,
+) {
+  const purchase = allocation.purchaseId ? purchaseById.get(allocation.purchaseId) : undefined;
+  const variance = allocation.accountSummaryId ? varianceById.get(allocation.accountSummaryId) : undefined;
+  return purchase?.paymentAmount ?? variance?.varianceAmount ?? 0;
+}
+
+function buildReviewContextIndex(project: Project, budgetLines: BudgetLine[]) {
+  const purchaseById = new Map(project.purchases.map((purchase) => [purchase.id, purchase]));
+  const varianceById = new Map(project.controlVariances.map((variance) => [variance.id, variance]));
+  const budgetLineById = new Map(budgetLines.map((line) => [line.id, line]));
+  const contextByAllocationId = new Map<string, ReviewContext>();
+
+  for (const allocation of project.allocations) {
+    contextByAllocationId.set(
+      allocation.id,
+      allocationReviewContextFromMaps(allocation, purchaseById, varianceById, budgetLineById),
+    );
+  }
+
+  return { contextByAllocationId, purchaseById, varianceById, budgetLineById };
+}
+
+function reviewFilterOptions(rows: Allocation[], contextByAllocationId: Map<string, ReviewContext>): ReviewFilterOptions {
   const functionCodes = new Set<string>();
   const objectCodes = new Set<string>();
   for (const allocation of rows) {
-    const context = allocationReviewContext(project, budgetLines, allocation);
+    const context = contextByAllocationId.get(allocation.id);
+    if (!context) continue;
     if (context.functionCode) functionCodes.add(context.functionCode);
     if (context.objectCode) objectCodes.add(context.objectCode);
   }
@@ -1468,10 +1518,15 @@ function reviewFilterOptions(project: Project, budgetLines: BudgetLine[], rows: 
   };
 }
 
-function filterReviewRows(project: Project, budgetLines: BudgetLine[], rows: Allocation[], filters: ReviewFilters): Allocation[] {
+function filterReviewRows(
+  rows: Allocation[],
+  filters: ReviewFilters,
+  contextByAllocationId: Map<string, ReviewContext>,
+): Allocation[] {
   const keyword = filters.keyword.trim().toLowerCase();
   return rows.filter((allocation) => {
-    const context = allocationReviewContext(project, budgetLines, allocation);
+    const context = contextByAllocationId.get(allocation.id);
+    if (!context) return false;
     if (filters.functionCode && context.functionCode !== filters.functionCode) return false;
     if (filters.objectCode && context.objectCode !== filters.objectCode) return false;
     if (filters.status && allocation.status !== filters.status) return false;
@@ -1552,6 +1607,27 @@ function allocationReviewContext(project: Project, budgetLines: BudgetLine[], al
   const purchase = project.purchases.find((item) => item.id === allocation.purchaseId);
   const variance = project.controlVariances.find((item) => item.id === allocation.accountSummaryId);
   const line = budgetLines.find((item) => item.id === allocation.budgetLineId);
+  return allocationReviewContextFromValues(allocation, purchase, variance, line);
+}
+
+function allocationReviewContextFromMaps(
+  allocation: Allocation,
+  purchaseById: Map<string, Purchase>,
+  varianceById: Map<string, ControlVariance>,
+  budgetLineById: Map<string, BudgetLine>,
+) {
+  const purchase = allocation.purchaseId ? purchaseById.get(allocation.purchaseId) : undefined;
+  const variance = allocation.accountSummaryId ? varianceById.get(allocation.accountSummaryId) : undefined;
+  const line = allocation.budgetLineId ? budgetLineById.get(allocation.budgetLineId) : undefined;
+  return allocationReviewContextFromValues(allocation, purchase, variance, line);
+}
+
+function allocationReviewContextFromValues(
+  allocation: Allocation,
+  purchase: Purchase | undefined,
+  variance: ControlVariance | undefined,
+  line: BudgetLine | undefined,
+) {
   const functionCode = purchase?.functionCode ?? variance?.functionCode ?? line?.functionCode ?? "";
   const objectCode = purchase?.objectCode ?? variance?.objectCode ?? "";
   const keywordText = [

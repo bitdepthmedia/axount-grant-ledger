@@ -1,8 +1,9 @@
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
 import { exportReconciliationWorkbook, projectTotals } from "./exportWorkbook";
-import { buildCarryoverSource, createProject, loadProjectBundle, saveProjectBundle } from "./project";
+import { buildCarryoverSource, createProject, loadProjectBundle, projectFileName, saveProjectBundle } from "./project";
 import { syntheticImports } from "./testFixtures";
+import type { Project } from "./types";
 
 describe("project persistence and export", () => {
   it("saves and reopens a .recon project bundle", async () => {
@@ -26,6 +27,10 @@ describe("project persistence and export", () => {
     expect(reopened.allocations.length).toBeGreaterThanOrEqual(5);
   });
 
+  it("uses a Reconsile default name for unnamed .recon project bundles", () => {
+    expect(projectFileName({ grantName: "", grantCode: "", fiscalYear: "" } as Project)).toBe("reconsile-project.recon");
+  });
+
   it("exports an Excel workbook with required reconciliation tabs", async () => {
     const project = createProject({
       grantName: "Synthetic Grant",
@@ -41,6 +46,7 @@ describe("project persistence and export", () => {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(await blob.arrayBuffer());
 
+    expect(workbook.creator).toBe("Reconsile");
     expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual([
       "Summary",
       "Budget Lines",
@@ -53,6 +59,7 @@ describe("project persistence and export", () => {
       "Carryover",
       "Source Checks",
     ]);
+    expect(workbook.getWorksheet("Summary")?.getCell("A1").value).toBe("Reconsile");
   });
 
   it("subtracts carryover from grant-to-date remaining budget", async () => {
