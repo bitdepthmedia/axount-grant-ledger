@@ -45,6 +45,66 @@ describe("source workbook parsers", () => {
     expect(budget.lines[0].entity).toBe("Synthetic District");
   });
 
+  it("keeps amount-bearing budget rows with labeled function codes", async () => {
+    const csv = [
+      "Function Code,Description,Entity,FTE/Hours,Salaries 1000,Benefits 2000,\"Purchased Services 3000, 4000\",Supplies 5000,\"Capital Outlay 6000\",\"Other Expenses 7000, 8000\",Total",
+      "370 - Support Services,,,,,,,,,,",
+      "\"371: Non-Public School Pupils\",Private-school instructional supplies,Synthetic District,0 / 0,0,0,0,6312,0,0,6312",
+      "\"371: Non-Public School Pupils\",Private-school contracted instruction,Synthetic District,0 / 0,0,0,400,0,0,0,400",
+    ].join("\n");
+
+    const budget = await parseBudgetBuffer(textBuffer(csv), "wide-371-budget.csv", "Wide budget");
+
+    expect(budget.lines.filter((line) => line.functionCode === "371: Non-Public School Pupils")).toHaveLength(2);
+    expect(budget.lines.map((line) => line.objectBucket)).toEqual(["Supplies", "Purchased Services"]);
+    expect(sum(budget.lines.map((line) => line.approvedAmount))).toBeCloseTo(6712, 2);
+  });
+
+  it("parses approved budget rows from line-item CSV exports", async () => {
+    const csv = [
+      "Grant Name,Line Item Description,Object Code,Function Code,Program Code Override,Status,Account Number,Entities,Amount,Benefits,FTE,Hours",
+      "Title I,Private-school instructional supplies,supplies,371,,ADD ITEM NOW,,district-office,6312,,0,0",
+      "Title I,Private-school contracted instruction,purchased-services,371,,ADD ITEM NOW,,district-office,400,,0,0",
+      "Title I,Private-school teacher,salaries,371,,ADD ITEM NOW,,district-office,9000,2200,1,0",
+      "Title I,Private-school benefits,benefits,371,,ADD ITEM NOW,,district-office,0,100,0,0",
+    ].join("\n");
+
+    const budget = await parseBudgetBuffer(textBuffer(csv), "line-items-371-budget.csv", "Line items");
+
+    expect(budget.lines).toHaveLength(5);
+    expect(budget.lines.map((line) => [line.functionCode, line.objectBucket, line.approvedAmount])).toEqual([
+      ["371", "Supplies", 6312],
+      ["371", "Purchased Services", 400],
+      ["371", "Salaries", 9000],
+      ["371", "Benefits", 2200],
+      ["371", "Benefits", 100],
+    ]);
+    expect(budget.lines[0].entity).toBe("district-office");
+  });
+
+  it("rejects unsupported approved budget CSVs instead of importing an empty budget", async () => {
+    const csv = [
+      "Function Code,Description,Amount",
+      "371,Private-school instructional supplies,6312",
+    ].join("\n");
+
+    await expect(parseBudgetBuffer(textBuffer(csv), "unsupported-budget.csv", "Unsupported")).rejects.toThrow(
+      /Unsupported approved budget format/,
+    );
+  });
+
+  it("rejects line-item budget rows with amount-bearing unknown object categories", async () => {
+    const csv = [
+      "Grant Name,Line Item Description,Object Code,Function Code,Entities,Amount,Benefits,FTE,Hours",
+      "Title I,Private-school instructional supplies,supplies,371,district-office,6312,,0,0",
+      "Title I,Private-school unsupported item,unknown-category,371,district-office,400,,0,0",
+    ].join("\n");
+
+    await expect(parseBudgetBuffer(textBuffer(csv), "line-items-unknown-object.csv", "Line items")).rejects.toThrow(
+      /Rejected 1 amount-bearing row/,
+    );
+  });
+
   it("parses account obligated spending and excludes count rows", () => {
     const accounts = parseAccountsWorkbook(syntheticAccountsWorkbook());
 

@@ -41,6 +41,11 @@ interface StaffGroup {
   sourceAccountAmounts: Map<string, number>;
 }
 
+interface BudgetParseResult {
+  lines: BudgetLine[];
+  rejectedAmountRows: number;
+}
+
 export async function workbookFromBuffer(buffer: ArrayBuffer): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
@@ -146,14 +151,40 @@ function parseBudgetRows(rows: string[][], sourceFileName: string, label: string
     index: findHeaderIndex(header, BUDGET_AMOUNT_HEADER_ALIASES[columnLabel] ?? [columnLabel]),
   })).filter((column) => column.index > 0);
 
+  const result = amountIndexes.length
+    ? parseWideBudgetLines(rows, functionIndex, descriptionIndex, entityIndex, amountIndexes)
+    : parseLineItemBudgetLines(rows, header);
+  if (result.rejectedAmountRows > 0) {
+    throw new Error(unsupportedBudgetMessage(sourceFileName, header, rows.length - 1, amountIndexes.length > 0, result.rejectedAmountRows));
+  }
+  const { lines } = result;
+  if (!lines.length) {
+    throw new Error(unsupportedBudgetMessage(sourceFileName, header, rows.length - 1, amountIndexes.length > 0, 0));
+  }
+
+  return {
+    id: stableId("budget-version", [sourceFileName, label || "original"]),
+    label: label || "Original budget",
+    sourceFileName,
+    importedAt: new Date().toISOString(),
+    lines,
+  };
+}
+
+function parseWideBudgetLines(
+  rows: string[][],
+  functionIndex: number,
+  descriptionIndex: number,
+  entityIndex: number,
+  amountIndexes: Array<{ columnLabel: string; index: number }>,
+): BudgetParseResult {
   const lines: BudgetLine[] = [];
   rows.forEach((row, rowIndex) => {
     if (rowIndex === 0) return;
     const rowNumber = rowIndex + 1;
-    const functionCode = textAt(row, functionIndex >= 0 ? functionIndex : 0);
+    const functionCode = normalizeFunctionCode(textAt(row, functionIndex >= 0 ? functionIndex : 0));
     const description = textAt(row, descriptionIndex >= 0 ? descriptionIndex : 1);
     if (!functionCode || !description || description.toLowerCase() === "sub-total") return;
-    if (functionCode.includes("-")) return;
 
     for (const amountColumn of amountIndexes) {
       const approvedAmount = parseMoney(row[amountColumn.index]);
@@ -170,14 +201,99 @@ function parseBudgetRows(rows: string[][], sourceFileName: string, label: string
       });
     }
   });
+  return { lines, rejectedAmountRows: 0 };
+}
 
-  return {
-    id: stableId("budget-version", [sourceFileName, label || "original"]),
-    label: label || "Original budget",
-    sourceFileName,
-    importedAt: new Date().toISOString(),
-    lines,
-  };
+function parseLineItemBudgetLines(rows: string[][], header: string[]): BudgetParseResult {
+  const functionIndex = findHeaderIndex(header, ["Function Code", "Func. Code"]);
+  const descriptionIndex = findHeaderIndex(header, ["Line Item Description", "Description"]);
+  const objectIndex = findHeaderIndex(header, ["Object Code", "Object"]);
+  const amountIndex = findHeaderIndex(header, ["Amount"]);
+  const benefitsIndex = findHeaderIndex(header, ["Benefits"]);
+  const entityIndex = findHeaderIndex(header, ["Entities", "Entity"]);
+  if (functionIndex < 0 || descriptionIndex < 0 || objectIndex < 0 || (amountIndex < 0 && benefitsIndex < 0)) {
+    return { lines: [], rejectedAmountRows: 0 };
+  }
+
+  const lines: BudgetLine[] = [];
+  let rejectedAmountRows = 0;
+  rows.forEach((row, rowIndex) => {
+    if (rowIndex === 0) return;
+    const rowNumber = rowIndex + 1;
+    const functionCode = normalizeFunctionCode(textAt(row, functionIndex));
+    const description = textAt(row, descriptionIndex);
+    const entity = textAt(row, entityIndex);
+    const objectBucket = objectBucketFromLineItemObject(textAt(row, objectIndex));
+    const approvedAmount = parseMoney(textAt(row, amountIndex));
+    const benefitsAmount = parseMoney(textAt(row, benefitsIndex));
+    const primaryAmount = objectBucket === "Benefits" && Math.abs(approvedAmount) < 0.005 ? benefitsAmount : approvedAmount;
+    if (!functionCode || !description || description.toLowerCase() === "sub-total") {
+      if (Math.abs(primaryAmount) >= 0.005 || Math.abs(benefitsAmount) >= 0.005) rejectedAmountRows += 1;
+      return;
+    }
+
+    if (Math.abs(primaryAmount) >= 0.005 && objectBucket !== "Unknown") {
+      lines.push({
+        id: stableId("budget-line", [rowNumber, functionCode, objectBucket, "amount"]),
+        functionCode,
+        objectBucket,
+        description,
+        entity,
+        approvedAmount: primaryAmount,
+        sourceRow: rowNumber,
+        columnLabel: objectBucket === "Benefits" && Math.abs(approvedAmount) < 0.005 ? "Benefits" : "Amount",
+      });
+    } else if (Math.abs(primaryAmount) >= 0.005) {
+      rejectedAmountRows += 1;
+    }
+
+    if (objectBucket !== "Benefits" && Math.abs(benefitsAmount) >= 0.005) {
+      lines.push({
+        id: stableId("budget-line", [rowNumber, functionCode, "benefits"]),
+        functionCode,
+        objectBucket: "Benefits",
+        description,
+        entity,
+        approvedAmount: benefitsAmount,
+        sourceRow: rowNumber,
+        columnLabel: "Benefits",
+      });
+    }
+  });
+  return { lines, rejectedAmountRows };
+}
+
+function objectBucketFromLineItemObject(value: string): ObjectBucket {
+  const normalized = value.toLowerCase().replace(/[_/]+/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+  if (/^\d/.test(normalized)) return objectBucketFromCode(normalized);
+  if (normalized.includes("salar")) return "Salaries";
+  if (normalized.includes("benefit")) return "Benefits";
+  if (normalized.includes("purchased") || normalized.includes("service")) return "Purchased Services";
+  if (normalized.includes("suppl") || normalized.includes("material")) return "Supplies";
+  if (normalized.includes("capital")) return "Capital Outlay";
+  if (normalized.includes("other")) return "Other";
+  return "Unknown";
+}
+
+function normalizeFunctionCode(value: string): string {
+  return value.replace(/^(\d+)\.0+(?=\D|$)/, "$1").trim();
+}
+
+function unsupportedBudgetMessage(
+  sourceFileName: string,
+  header: string[],
+  dataRowCount: number,
+  hasWideAmountColumns: boolean,
+  rejectedAmountRows: number,
+): string {
+  const headerList = header.filter(Boolean).join(", ") || "none";
+  const schemaHint = hasWideAmountColumns
+    ? "No amount-bearing approved budget rows were found."
+    : "Expected either the wide approved-budget amount columns or line-item columns: Line Item Description, Object Code, Function Code, Amount.";
+  const rejectionHint = rejectedAmountRows
+    ? ` Rejected ${rejectedAmountRows} amount-bearing row${rejectedAmountRows === 1 ? "" : "s"} with required fields that could not be interpreted.`
+    : "";
+  return `Unsupported approved budget format in ${sourceFileName}. ${schemaHint}${rejectionHint} Checked ${Math.max(0, dataRowCount)} data rows. Headers: ${headerList}`;
 }
 
 function sheetToMatrix(sheet: ExcelJS.Worksheet): string[][] {

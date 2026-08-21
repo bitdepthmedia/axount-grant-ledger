@@ -1613,7 +1613,7 @@ export function reviewBudgetLineOptions(
 ): BudgetLine[] {
   const objectBucket = filters.objectCode ? objectBucketFromCode(filters.objectCode) : "";
   return budgetLines.filter((line) => {
-    if (filters.functionCode && line.functionCode !== filters.functionCode) return false;
+    if (filters.functionCode && !functionCodesMatch(line.functionCode, filters.functionCode)) return false;
     if (objectBucket && line.objectBucket !== objectBucket) return false;
     return true;
   });

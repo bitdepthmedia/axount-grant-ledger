@@ -91,6 +91,16 @@ describe("review budget line dropdown options", () => {
     expect(optionIds(lines, { functionCode: "125", objectCode: "3220" })).toEqual(["line-125-services"]);
   });
 
+  it("shows root-equivalent labeled function codes in review queue budget options", () => {
+    const lines: BudgetLine[] = [
+      budgetLine("line-371-services", "371: Non-Public School Pupils", "Purchased Services"),
+      budgetLine("line-371-supplies", "371: Non-Public School Pupils", "Supplies"),
+      budgetLine("line-125-services", "125", "Purchased Services"),
+    ];
+
+    expect(optionIds(lines, { functionCode: "371", objectCode: "3220" })).toEqual(["line-371-services"]);
+  });
+
   it("shows compact function code and approved amount in budget line labels", () => {
     expect(
       reviewBudgetLineLabel({
