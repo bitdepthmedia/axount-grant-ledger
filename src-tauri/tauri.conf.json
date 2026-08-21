@@ -27,6 +27,9 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.png"],
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "fileAssociations": [
       {
         "ext": ["recon"],
