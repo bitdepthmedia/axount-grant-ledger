@@ -1015,6 +1015,7 @@ function AllocationTable({
   rowLimitNotice,
   selectable,
 }: ReviewProps & { title: string; rows: Allocation[]; rowLimitNotice?: string; selectable?: SelectionProps }) {
+  const [openBudgetLinePickerId, setOpenBudgetLinePickerId] = useState<string | null>(null);
   const budgetLineOptions = selectable ? reviewBudgetLineOptions(budgetLines, selectable.filters) : budgetLines;
   const purchaseById = useMemo(() => new Map(project.purchases.map((purchase) => [purchase.id, purchase])), [project.purchases]);
   const varianceById = useMemo(
@@ -1111,19 +1112,14 @@ function AllocationTable({
                   </td>
                   <td className="amount-cell">{currency(amount)}</td>
                   <td>
-                    <select
-                      value={allocation.budgetLineId ?? ""}
-                      onChange={(event) =>
-                        onChange({ ...allocation, budgetLineId: event.target.value || undefined, matchBasis: "manual" })
-                      }
-                    >
-                      <option value="">No budget line</option>
-                      {budgetLineOptions.map((budgetLine) => (
-                        <option key={budgetLine.id} value={budgetLine.id}>
-                          {reviewBudgetLineLabel(budgetLine)}
-                        </option>
-                      ))}
-                    </select>
+                    <BudgetLinePicker
+                      allocation={allocation}
+                      budgetLines={budgetLineOptions}
+                      currentLine={line}
+                      open={openBudgetLinePickerId === allocation.id}
+                      onOpenChange={(open) => setOpenBudgetLinePickerId(open ? allocation.id : null)}
+                      onChange={onChange}
+                    />
                     {line && <span className="muted block">{currency(line.approvedAmount)} approved</span>}
                   </td>
                   <td>
@@ -1145,6 +1141,80 @@ function AllocationTable({
         />
       )}
     </div>
+  );
+}
+
+export function BudgetLinePicker({
+  allocation,
+  budgetLines,
+  currentLine,
+  open,
+  onChange,
+  onOpenChange,
+}: {
+  allocation: Allocation;
+  budgetLines: BudgetLine[];
+  currentLine?: BudgetLine;
+  open: boolean;
+  onChange: (allocation: Allocation) => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredLines = open
+    ? budgetLines.filter((budgetLine) => reviewBudgetLineLabel(budgetLine).toLowerCase().includes(normalizedQuery))
+    : [];
+
+  function selectBudgetLine(budgetLineId?: string) {
+    onChange({ ...allocation, budgetLineId, matchBasis: "manual" });
+    setQuery("");
+    onOpenChange(false);
+  }
+
+  return (
+    <details
+      className="multi-select-dropdown budget-line-picker"
+      open={open}
+      onToggle={(event) => onOpenChange(event.currentTarget.open)}
+    >
+      <summary>{currentLine ? reviewBudgetLineLabel(currentLine) : "No budget line"}</summary>
+      {open ? (
+        <div className="multi-select-panel">
+          <input
+            type="search"
+            aria-label="Search budget lines"
+            placeholder="Search budget lines"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="multi-select-options budget-line-options" role="listbox" aria-label="Budget lines">
+            <button
+              type="button"
+              role="option"
+              aria-selected={!allocation.budgetLineId}
+              className={!allocation.budgetLineId ? "selected-option" : undefined}
+              onClick={() => selectBudgetLine()}
+            >
+              <strong>No budget line</strong>
+            </button>
+            {filteredLines.map((budgetLine) => (
+              <button
+                key={budgetLine.id}
+                type="button"
+                role="option"
+                aria-selected={allocation.budgetLineId === budgetLine.id}
+                className={allocation.budgetLineId === budgetLine.id ? "selected-option" : undefined}
+                onClick={() => selectBudgetLine(budgetLine.id)}
+              >
+                <strong>{compactFunctionCode(budgetLine.functionCode)} / {budgetLine.objectBucket}</strong>
+                <span>{currency(budgetLine.approvedAmount)} / {budgetLine.description}</span>
+              </button>
+            ))}
+            {!filteredLines.length ? <p className="empty-option">No matching budget lines.</p> : null}
+          </div>
+        </div>
+      ) : null}
+    </details>
   );
 }
 
@@ -1237,7 +1307,7 @@ function BudgetReviewTable({
   );
 }
 
-function BudgetAccountMultiSelect({
+export function BudgetAccountMultiSelect({
   project,
   budgetLine,
   items,
@@ -1249,43 +1319,46 @@ function BudgetAccountMultiSelect({
   onChange: (allocation: Allocation) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
   const selectedCount = items.filter((allocation) => allocation.budgetLineId === budgetLine.id).length;
-  const filteredItems = filterBudgetAccountItems(project, items, query);
+  const filteredItems = open ? filterBudgetAccountItems(project, items, query) : [];
 
   function toggleItem(allocation: Allocation, selected: boolean) {
     onChange({ ...allocation, budgetLineId: selected ? budgetLine.id : undefined, matchBasis: "manual" });
   }
 
   return (
-    <details className="multi-select-dropdown">
+    <details className="multi-select-dropdown" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>{selectedCount ? `${selectedCount} selected` : "Match account items"}</summary>
-      <div className="multi-select-panel">
-        <input
-          type="search"
-          placeholder="Search account items"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <div className="multi-select-options">
-          {filteredItems.map((allocation) => {
-            const checked = allocation.budgetLineId === budgetLine.id;
-            return (
-              <label key={allocation.id} className={checked ? "selected-option" : undefined}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={(event) => toggleItem(allocation, event.target.checked)}
-                />
-                <span>
-                  <strong>{reviewAccountItemLabel(project, allocation)}</strong>
-                  <span className="muted block">{currency(allocationAmount(project, allocation))}</span>
-                </span>
-              </label>
-            );
-          })}
-          {!filteredItems.length && <p className="empty-option">No matching account items.</p>}
+      {open ? (
+        <div className="multi-select-panel">
+          <input
+            type="search"
+            placeholder="Search account items"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="multi-select-options">
+            {filteredItems.map((allocation) => {
+              const checked = allocation.budgetLineId === budgetLine.id;
+              return (
+                <label key={allocation.id} className={checked ? "selected-option" : undefined}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(event) => toggleItem(allocation, event.target.checked)}
+                  />
+                  <span>
+                    <strong>{reviewAccountItemLabel(project, allocation)}</strong>
+                    <span className="muted block">{currency(allocationAmount(project, allocation))}</span>
+                  </span>
+                </label>
+              );
+            })}
+            {!filteredItems.length ? <p className="empty-option">No matching account items.</p> : null}
+          </div>
         </div>
-      </div>
+      ) : null}
     </details>
   );
 }

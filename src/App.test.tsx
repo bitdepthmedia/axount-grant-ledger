@@ -1,8 +1,78 @@
-import { describe, expect, it } from "vitest";
+import { createElement, type ComponentType } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
 import { reviewBudgetLineLabel, reviewBudgetLineOptions, reviewItemsForBudgetLine } from "./App";
 import type { Allocation, BudgetLine, Project, Purchase } from "./lib/types";
 
 describe("review budget line dropdown options", () => {
+  it("renders budget line choices only for the open row picker", async () => {
+    const app = (await import("./App")) as typeof import("./App") & {
+      BudgetLinePicker?: ComponentType<{
+        allocation: Allocation;
+        budgetLines: BudgetLine[];
+        currentLine?: BudgetLine;
+        open: boolean;
+        onChange: (allocation: Allocation) => void;
+        onOpenChange: (open: boolean) => void;
+      }>;
+    };
+    expect(app.BudgetLinePicker).toBeTypeOf("function");
+    if (!app.BudgetLinePicker) throw new Error("BudgetLinePicker is unavailable");
+
+    const lines = Array.from({ length: 100 }, (_, index) => budgetLine(`line-${index}`, "125", "Supplies"));
+    const markup = renderToStaticMarkup(
+      createElement(
+        "div",
+        null,
+        ...Array.from({ length: 50 }, (_, index) =>
+          createElement(app.BudgetLinePicker!, {
+            key: index,
+            allocation: allocation(`allocation-${index}`, `purchase-${index}`),
+            budgetLines: lines,
+            open: index === 0,
+            onChange: vi.fn(),
+            onOpenChange: vi.fn(),
+          }),
+        ),
+      ),
+    );
+
+    expect(markup.match(/<summary/g)).toHaveLength(50);
+    expect(markup.match(/role="option"/g)).toHaveLength(101);
+  });
+
+  it("does not render budget account choices until their dropdown is opened", async () => {
+    const app = (await import("./App")) as typeof import("./App") & {
+      BudgetAccountMultiSelect?: ComponentType<{
+        project: Project;
+        budgetLine: BudgetLine;
+        items: Allocation[];
+        onChange: (allocation: Allocation) => void;
+      }>;
+    };
+    expect(app.BudgetAccountMultiSelect).toBeTypeOf("function");
+    if (!app.BudgetAccountMultiSelect) throw new Error("BudgetAccountMultiSelect is unavailable");
+
+    const purchases = Array.from({ length: 100 }, (_, index) =>
+      purchase(`purchase-${index}`, "125", "5110", "Supplies"),
+    );
+    const project = reviewProject(
+      purchases,
+      purchases.map((item, index) => allocation(`allocation-${index}`, item.id)),
+    );
+    const markup = renderToStaticMarkup(
+      createElement(app.BudgetAccountMultiSelect, {
+        project,
+        budgetLine: budgetLine("line-125-supplies", "125", "Supplies"),
+        items: project.allocations,
+        onChange: vi.fn(),
+      }),
+    );
+
+    expect(markup).toContain("Match account items");
+    expect(markup).not.toContain('type="checkbox"');
+  });
+
   it("compounds review queue function and object filters", () => {
     const lines: BudgetLine[] = [
       budgetLine("line-125-services", "125", "Purchased Services"),

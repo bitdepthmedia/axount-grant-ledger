@@ -966,6 +966,10 @@ tbody tr:last-child td {
   min-width: 320px;
 }
 
+.budget-line-picker {
+  min-width: 260px;
+}
+
 .multi-select-dropdown summary {
   min-height: 36px;
   padding: 8px 12px;
@@ -1038,6 +1042,28 @@ tbody tr:last-child td {
   width: 16px;
   height: 16px;
   margin-top: 2px;
+}
+
+.budget-line-options button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 9px;
+  border-radius: 7px;
+  background: transparent;
+  color: #243044;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.budget-line-options button:hover,
+.budget-line-options button.selected-option {
+  background: #eef8f5;
+}
+
+.budget-line-options button span {
+  color: var(--muted);
 }
 
 .empty-option {
